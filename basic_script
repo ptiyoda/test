@@ -1,0 +1,94 @@
+import httpx
+from loguru import logger
+
+
+class ServiceNowClient:
+    def __init__(self, instance_url: str, username: str, password: str):
+        self.base_url = f"{instance_url}/api/now/table/incident"
+        self.auth = (username, password)
+        self.headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+    async def create_incident(self, payload: dict) -> dict:
+        """Crée un ticket d'incident"""
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    self.base_url,
+                    auth=self.auth,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=10
+                )
+                response.raise_for_status()
+                logger.success("Incident créé avec succès")
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Erreur HTTP: {e.response.status_code} - {e.response.text}")
+            except httpx.RequestError as e:
+                logger.error(f"Erreur de requête: {e}")
+            except Exception as e:
+                logger.exception(f"Erreur inattendue lors de la création de l'incident: {e}")
+        return {}
+
+    async def update_incident(self, sys_id: str, payload: dict) -> dict:
+        """Met à jour un ticket d'incident existant"""
+        url = f"{self.base_url}/{sys_id}"
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.patch(
+                    url,
+                    auth=self.auth,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=10
+                )
+                response.raise_for_status()
+                logger.success("Incident mis à jour avec succès")
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Erreur HTTP: {e.response.status_code} - {e.response.text}")
+            except httpx.RequestError as e:
+                logger.error(f"Erreur de requête: {e}")
+            except Exception as e:
+                logger.exception(f"Erreur inattendue lors de la mise à jour de l'incident: {e}")
+        return {}
+
+
+
+
+
+
+
+# 
+import asyncio
+
+async def main():
+    client = ServiceNowClient(
+        instance_url="https://votre_instance.service-now.com",
+        username="votre_utilisateur",
+        password="votre_mot_de_passe"
+    )
+
+    # Créer un incident
+    payload_create = {
+        "short_description": "Problème de connexion VPN",
+        "urgency": "2",
+        "impact": "2"
+    }
+    result_create = await client.create_incident(payload_create)
+    print(result_create)
+
+    # Mettre à jour un incident existant
+    sys_id = result_create.get("result", {}).get("sys_id")
+    if sys_id:
+        payload_update = {
+            "state": "2",  # Exemple: "In Progress"
+            "comments": "Incident pris en charge par le support"
+        }
+        result_update = await client.update_incident(sys_id, payload_update)
+        print(result_update)
+
+asyncio.run(main())
