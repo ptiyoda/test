@@ -1,0 +1,44 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import json
+
+# --- Paramètres à modifier ---
+confluence_base_url = "https://votre-instance.atlassian.net/wiki"
+page_id = "123456789"  # ID de la page Confluence
+fichier_a_telecharger = "data.json"  # Nom exact du fichier attaché
+username = "votre.email@domaine.com"
+api_token = "VOTRE_API_TOKEN"  # Généré depuis Atlassian
+
+# --- Récupérer la liste des fichiers attachés ---
+url = f"{confluence_base_url}/rest/api/content/{page_id}/child/attachment"
+response = requests.get(url, auth=HTTPBasicAuth(username, api_token))
+
+if response.status_code != 200:
+    raise Exception(f"Erreur {response.status_code}: {response.text}")
+
+data = response.json()
+
+# --- Chercher l'URL du fichier JSON ---
+download_url = None
+for attachment in data["results"]:
+    if attachment["title"] == fichier_a_telecharger:
+        download_url = confluence_base_url + attachment["_links"]["download"]
+        break
+
+if not download_url:
+    raise FileNotFoundError(f"Fichier '{fichier_a_telecharger}' introuvable sur la page {page_id}.")
+
+# --- Télécharger et charger le JSON ---
+download_response = requests.get(download_url, auth=HTTPBasicAuth(username, api_token))
+
+if download_response.status_code == 200:
+    contenu_json = download_response.json()  # directement en dict Python
+    print("✅ JSON chargé avec succès !")
+
+    # Exemple d’utilisation : parcourir les clés
+    for cle, liste in contenu_json.items():
+        print(f"Clé: {cle} (taille: {len(liste)})")
+        if liste:  # si la liste n’est pas vide
+            print(" Exemple d’élément:", liste[0])  # afficher le premier dict
+else:
+    raise Exception(f"Erreur téléchargement: {download_response.status_code}")
