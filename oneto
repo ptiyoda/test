@@ -1,0 +1,46 @@
+from django.views.generic import ListView
+from .models import Serveur
+from .forms import ServeurFilterForm
+from django.db.models import CharField, TextField
+
+class ServeurListView(ListView):
+    model = Serveur
+    template_name = 'serveurs/serveur_list.html'
+    context_object_name = 'serveurs'
+    paginate_by = 10  # pagination
+
+    # mapping "user-friendly" → lookup Django
+    FIELD_MAP = {
+        'ip': 'ip',
+        'datacenter': 'datacenter__nom',
+        'localisation': 'datacenter__localisation',
+        'pays': 'datacenter__pays__nom',
+    }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        filter_kwargs = {}
+
+        for key, field_lookup in self.FIELD_MAP.items():
+            value = self.request.GET.get(key)
+            if value:
+                # Déterminer si c'est un champ texte pour icontains
+                parts = field_lookup.split('__')
+                model = self.model
+                for part in parts[:-1]:
+                    model = model._meta.get_field(part).related_model
+                field = model._meta.get_field(parts[-1])
+                if isinstance(field, (CharField, TextField)):
+                    filter_kwargs[f"{field_lookup}__icontains"] = value
+                else:
+                    filter_kwargs[f"{field_lookup}"] = value
+
+        if filter_kwargs:
+            queryset = queryset.filter(**filter_kwargs)
+
+        return queryset
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['filter_form'] = ServeurFilterForm(self.request.GET)
+        return context
