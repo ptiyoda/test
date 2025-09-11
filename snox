@@ -1,0 +1,42 @@
+# models.py
+from django.db import models
+
+class IncidentTemplate(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    # Liste de champs avec leur label, type, valeur par défaut, etc.
+    fields = models.JSONField(help_text="Liste des champs de l'incident")
+
+    def __str__(self):
+        return self.name
+
+
+
+[
+    {"name": "short_description", "label": "Résumé", "type": "CharField", "value": "Problème réseau"},
+    {"name": "description", "label": "Description détaillée", "type": "Textarea", "value": "Le réseau interne est indisponible."},
+    {"name": "category", "label": "Catégorie", "type": "CharField", "value": "Réseau"},
+    {"name": "priority", "label": "Priorité", "type": "ChoiceField", "value": "2 - Haute", "choices": ["1 - Critique","2 - Haute","3 - Moyenne","4 - Faible"]}
+]
+
+
+
+# admin.py
+from django.contrib import admin
+from .models import IncidentTemplate
+import json
+
+class IncidentTemplateAdmin(admin.ModelAdmin):
+    list_display = ("name",)
+    # Champ JSON modifiable via textarea
+    readonly_fields = ()
+    fieldsets = (
+        (None, {
+            "fields": ("name", "fields")
+        }),
+    )
+
+    # Convertir JSON pour affichage plus lisible
+    def fields_pretty(self, obj):
+        return json.dumps(obj.fields, indent=2)
+
+admin.site.register(IncidentTemplate, IncidentTemplateAdmin)
