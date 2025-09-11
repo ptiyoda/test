@@ -40,3 +40,49 @@ class IncidentTemplateAdmin(admin.ModelAdmin):
         return json.dumps(obj.fields, indent=2)
 
 admin.site.register(IncidentTemplate, IncidentTemplateAdmin)
+
+
+
+
+
+
+
+
+
+
+# admin.py
+from django.contrib import admin
+from django import forms
+from .models import IncidentTemplate
+import json
+
+class IncidentTemplateForm(forms.ModelForm):
+    class Meta:
+        model = IncidentTemplate
+        fields = "__all__"
+
+    # Redéfinir le widget pour fields
+    fields = forms.JSONField(widget=forms.Textarea(attrs={'cols': 80, 'rows': 20}))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.fields:
+            # Indenter le JSON pour le rendre lisible
+            self.fields['fields'].initial = json.dumps(self.instance.fields, indent=4)
+
+    def clean_fields(self):
+        # Convertir de nouveau en JSON
+        data = self.cleaned_data['fields']
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                raise forms.ValidationError("JSON invalide")
+        return data
+
+class IncidentTemplateAdmin(admin.ModelAdmin):
+    form = IncidentTemplateForm
+    list_display = ('name',)
+
+admin.site.register(IncidentTemplate, IncidentTemplateAdmin)
+
