@@ -1,19 +1,7 @@
-# admin.py
-from django.contrib import admin
-from django import forms
-from django_json_widget.widgets import JSONEditorWidget
-from .models import IncidentTemplate
-
-class IncidentTemplateForm(forms.ModelForm):
-    class Meta:
-        model = IncidentTemplate
-        fields = "__all__"
-        widgets = {
-            'fields': JSONEditorWidget,  # Widget avec coloration syntaxique
-        }
-
-class IncidentTemplateAdmin(admin.ModelAdmin):
-    form = IncidentTemplateForm
-    list_display = ('name',)
-
-admin.site.register(IncidentTemplate, IncidentTemplateAdmin)
+<script>
+document.querySelector('form').addEventListener('submit', function(e){
+    e.preventDefault();
+    const templateId = document.querySelector('select[name="template"]').value;
+    window.location.href = `/contact/${templateId}/`;
+});
+</script>
