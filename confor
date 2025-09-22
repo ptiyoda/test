@@ -1,0 +1,65 @@
+from django.db import models
+from django.contrib.contenttypes.models import ContentType
+
+class ComplianceRule(models.Model):
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)  
+    field = models.CharField(max_length=50)  
+    target_value = models.CharField(max_length=255)  
+    acceptable_values = models.JSONField(default=list, blank=True)  
+    description = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.content_type.model}.{self.field} compliance"
+
+
+
+  from packaging import version
+
+def classify_value(value, rule):
+    try:
+        val = version.parse(value)
+        tgt = version.parse(rule.target_value)
+        acc_values = [version.parse(v) for v in rule.acceptable_values]
+    except Exception:
+        val, tgt, acc_values = value, rule.target_value, rule.acceptable_values
+
+    if val == tgt:
+        return "target"
+    elif val in acc_values:
+        return "acceptable"
+    return "obsolete"
+
+
+def compliance_stats():
+    stats = []
+    for rule in ComplianceRule.objects.all():
+        model_class = rule.content_type.model_class()
+        queryset = model_class.objects.all()
+
+        results = [
+            classify_value(getattr(obj, rule.field), rule)
+            for obj in queryset
+            if hasattr(obj, rule.field)
+        ]
+
+        counts = {
+            "target": results.count("target"),
+            "acceptable": results.count("acceptable"),
+            "obsolete": results.count("obsolete"),
+        }
+        total = len(results)
+
+        stats.append({
+            "rule": rule,
+            "model": model_class.__name__,
+            "counts": counts,
+            "total": total,
+            "percent_target": (counts["target"] / total * 100) if total else 0,
+            "percent_acceptable": (counts["acceptable"] / total * 100) if total else 0,
+            "percent_obsolete": (counts["obsolete"] / total * 100) if total else 0,
+        })
+    return stats
+
+
+  <h5>{{ s.rule.description|default:s.rule }} ({{ s.model }})</h5>
+
