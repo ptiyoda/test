@@ -63,3 +63,40 @@ def compliance_stats():
 
   <h5>{{ s.rule.description|default:s.rule }} ({{ s.model }})</h5>
 
+
+
+
+{% extends "base.html" %}
+{% block content %}
+<h2>Compliance Dashboard</h2>
+<div class="row">
+  {% for s in stats %}
+  <div class="col-md-6">
+    <div class="card p-3 shadow-sm mb-3">
+      <h5>{{ s.rule.description|default:s.rule.field }}</h5>
+      <p>
+        Target: {{ s.counts.target }} |
+        Acceptable: {{ s.counts.acceptable }} |
+        Obsolete: {{ s.counts.obsolete }} (Total: {{ s.total }})
+      </p>
+      <div class="progress" style="height: 25px;">
+        <div class="progress-bar bg-success" role="progressbar"
+          style="width: {{ s.percent_target }}%">
+          {{ s.percent_target|floatformat:1 }}%
+        </div>
+        <div class="progress-bar bg-warning" role="progressbar"
+          style="width: {{ s.percent_acceptable }}%">
+          {{ s.percent_acceptable|floatformat:1 }}%
+        </div>
+        <div class="progress-bar bg-danger" role="progressbar"
+          style="width: {{ s.percent_obsolete }}%">
+          {{ s.percent_obsolete|floatformat:1 }}%
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+
