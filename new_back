@@ -1,0 +1,104 @@
+from django.db.models import CharField, TextField
+
+def get_queryset(self):
+    queryset = super().get_queryset()
+
+    filter_kwargs = {}
+    exclude_kwargs = {}
+
+    for key, field_lookup in self.FIELD_MAP.items():
+        values = self.request.GET.getlist(key)  # <-- récupère plusieurs valeurs GET
+        if values:
+            # Déterminer le champ pour savoir si c'est texte
+            parts = field_lookup.split('__')
+            model = self.model
+            for part in parts[:-1]:
+                model = model._meta.get_field(part).related_model
+            field = model._meta.get_field(parts[-1])
+
+            is_text = isinstance(field, (CharField, TextField))
+
+            # Sépare inclusions et exclusions
+            exclude_values = [v.lstrip("!") for v in values if v.startswith("!")]
+            include_values = [v for v in values if not v.startswith("!")]
+
+            if include_values:
+                lookup = f"{field_lookup}__in"
+                filter_kwargs[lookup] = include_values
+
+            if exclude_values:
+                lookup = f"{field_lookup}__in"
+                exclude_kwargs[lookup] = exclude_values
+
+    if filter_kwargs:
+        queryset = queryset.filter(**filter_kwargs)
+    if exclude_kwargs:
+        queryset = queryset.exclude(**exclude_kwargs)
+
+    return queryset
+
+
+
+
+
+
+<form method="get" class="card card-body mb-4">
+  <div class="row">
+    
+    <!-- Filtre Datacenter (multi sélection) -->
+    <div class="col-md-4">
+      <label>Datacenters</label>
+      <select class="form-control select2" name="datacenter" multiple="multiple" onchange="this.form.submit()">
+        {% for dc in datacenters %}
+          <option value="{{ dc.id }}" 
+            {% if dc.id|stringformat:"s" in request.GET.getlist('datacenter') %}selected{% endif %}>
+            {{ dc.nom }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Filtre Localisation (multi sélection) -->
+    <div class="col-md-4">
+      <label>Localisations</label>
+      <select class="form-control select2" name="localisation" multiple="multiple" onchange="this.form.submit()">
+        {% for loc in localisations %}
+          <option value="{{ loc }}" 
+            {% if loc in request.GET.getlist('localisation') %}selected{% endif %}>
+            {{ loc }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <!-- Filtre Pays (multi sélection) -->
+    <div class="col-md-4">
+      <label>Pays</label>
+      <select class="form-control select2" name="pays" multiple="multiple" onchange="this.form.submit()">
+        {% for p in pays %}
+          <option value="{{ p.id }}" 
+            {% if p.id|stringformat:"s" in request.GET.getlist('pays') %}selected{% endif %}>
+            {{ p.nom }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+  </div>
+</form>
+
+
+
+
+<script src="{% static 'adminlte/plugins/jquery/jquery.min.js' %}"></script>
+<script src="{% static 'adminlte/plugins/select2/js/select2.full.min.js' %}"></script>
+<script>
+  $(function () {
+    $('.select2').select2({
+      theme: 'bootstrap4',
+      width: '100%',
+      placeholder: "Choisir...",
+      allowClear: true
+    });
+  });
+</script>
