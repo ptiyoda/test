@@ -1,0 +1,113 @@
+from typing import Literal, Any, Dict
+from django.db.models import QuerySet
+from django.db.models import Count
+from .models import Host
+
+def count_hosts_by_filter(
+    filter_field: Literal["cpu", "ram", "disk"] = "cpu",
+    group_by_function: bool = False
+) -> QuerySet[Dict[str, Any]]:
+    """
+    Compte les hôtes selon un champ donné (cpu, ram, disk).
+    Optionnellement groupe aussi par function (AG/Node/Autre).
+    """
+    if group_by_function:
+        return (
+            Host.objects.values(filter_field, "function")
+            .annotate(total=Count("id"))
+            .order_by(filter_field, "function")
+        )
+    else:
+        return (
+            Host.objects.values(filter_field)
+            .annotate(total=Count("id"))
+            .order_by(filter_field)
+        )
+
+
+
+
+  {# templates/hosts/host_stats.html #}
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="row">
+    <div class="col-md-6">
+      <!-- Tableau -->
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Statistiques des hôtes par {{ filter_field }}</h3>
+        </div>
+        <div class="card-body">
+          <table class="table table-bordered table-striped">
+            <thead>
+              <tr>
+                <th>{{ filter_field|title }}</th>
+                {% if group_by_function %}<th>Function</th>{% endif %}
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in data %}
+              <tr>
+                <td>{{ row[filter_field] }}</td>
+                {% if group_by_function %}<td>{{ row.function }}</td>{% endif %}
+                <td>{{ row.total }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-6">
+      <!-- Graphique -->
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Graphique</h3>
+        </div>
+        <div class="card-body">
+          <canvas id="hostChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  const ctx = document.getElementById("hostChart").getContext("2d");
+
+  const labels = {{ data|safe|json_script:"labels" }};
+  const totals = {{ data|safe|json_script:"totals" }};
+
+  // Extraire labels dynamiquement (si group_by_function actif)
+  const rawData = {{ data|safe }};
+  const labelsJS = rawData.map(row => {
+      return "{{ filter_field }}: " + row["{{ filter_field }}"]
+             {% if group_by_function %} + " (" + row.function + ")" {% endif %}
+  });
+  const totalsJS = rawData.map(row => row.total);
+
+  new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: labelsJS,
+      datasets: [{
+        label: "Nombre d'hôtes",
+        data: totalsJS,
+        borderWidth: 1,
+        backgroundColor: "rgba(54, 162, 235, 0.6)"
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+</script>
+{% endblock %}
