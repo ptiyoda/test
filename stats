@@ -1,18 +1,32 @@
+def get_flexible_host_stats_granular(config: dict) -> dict:
+    clusters = {}
 
-for field, options in config.items():
-    source = options.get("source", "host")
-    if source != "host":
-        # Vérifie si la relation existe réellement sur le modèle
-        if hasattr(Host, source):
-            prefetch_related_fields.append(source)
+    for field, options in config.items():
+        source = options.get("source", "host")
+        group_by_function = options.get("group_by_function", False)
+
+        if source == "host":
+            qs = Host.objects.values(
+                "dynatrace__cluster__name", "function", field
+            )
         else:
-            # essaie le fallback par convention Django pour reverse FK
-            related_name = f"{source}_set"
-            if hasattr(Host, related_name):
-                prefetch_related_fields.append(related_name)
+            # relation inverse type metrics
+            qs = Host.objects.values(
+                "dynatrace__cluster__name", "function", f"{source}__{field}"
+            )
+
+        qs = qs.annotate(host_count=Count("id"))
+
+        for row in qs:
+            cluster = row["dynatrace__cluster__name"]
+            value = row.get(field) or row.get(f"{source}__{field}") or "unknown"
+
+            if group_by_function:
+                function = row["function"] if row["function"] in ["node", "ag"] else "other"
             else:
-                raise ValueError(f"Relation {source} ou {related_name} non trouvée sur Host")
+                function = "all"
 
-hosts = Host.objects.select_related(*select_related_fields).prefetch_related(*prefetch_related_fields)
+            clusters.setdefault(cluster, {}).setdefault(field, {}).setdefault(function, {})
+            clusters[cluster][field][function][str(value)] = row["host_count"]
 
-Résumé
+    return clusters
