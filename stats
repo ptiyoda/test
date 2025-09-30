@@ -1,50 +1,26 @@
-stats_dict = {}
-for cluster, data in stats.items():
-    cluster_dict = {"fields": {}}
-    for field, fdata in data.fields.items():
-        # toutes les valeurs uniques
-        value_set = set()
-        for func_values in fdata.values.values():
-            value_set.update(func_values.keys())
-        all_values = sorted(value_set, key=int)
+select_related_fields = ["dynatrace__cluster"]
+prefetch_related_fields = []
 
-        # créer une "liste de lignes" pour le template
-        rows = []
-        for val in all_values:
-            row = {"val": val}
-            for func, func_values in fdata.values.items():
-                row[func] = func_values.get(val, 0)
-            rows.append(row)
+for field, options in config.items():
+    source = options.get("source", "host")
+    if source == "metrics":
+        # metrics_set = nom par défaut si pas de related_name
+        if "metrics_set" not in prefetch_related_fields:
+            prefetch_related_fields.append("metrics_set")
 
-        cluster_dict["fields"][field] = {
-            "rows": rows,
-            "funcs": list(fdata.values.keys())
-        }
-    stats_dict[cluster] = cluster_dict
+hosts = Host.objects.select_related(*select_related_fields).prefetch_related(*prefetch_related_fields)
 
 
 
+for host in hosts:
+    for field, options in config.items():
+        source = options.get("source", "host")
+        group_by_function = options.get("group_by_function", False)
 
-{% for field, fdata in data.fields.items %}
-<h5>{{ field|upper }}</h5>
-<table class="table table-striped">
-  <thead>
-    <tr>
-      <th>Valeur</th>
-      {% for func in fdata.funcs %}
-        <th>{{ func|upper }}</th>
-      {% endfor %}
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in fdata.rows %}
-    <tr>
-      <td>{{ row.val }}</td>
-      {% for func in fdata.funcs %}
-        <td>{{ row|get_item:func }}</td>
-      {% endfor %}
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endfor %}
+        if source == "host":
+            value = getattr(host, field, 0)
+        elif source == "metrics":
+            metrics = host.metrics_set.first()  # ou .all() selon tes besoins
+            value = getattr(metrics, field, 0) if metrics else 0
+
+        # reste de la logique pour FieldStats identique
