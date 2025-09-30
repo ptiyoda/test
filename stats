@@ -1,17 +1,79 @@
-cluster_dict = {"fields": {}}
-for field, fdata in data.fields.items():
-    value_set = set()
-    for func_values in fdata.values.values():
-        value_set.update(f.func_values.keys())
+    for cluster, data in stats.items():
+        cluster_dict = {"fields": {}}
+        for field, fdata in data.fields.items():
+            # récupérer toutes les valeurs uniques pour ce champ
+            value_set = set()
+            for func_values in fdata.values.values():
+                value_set.update(func_values.keys())
+            all_values = sorted(value_set, key=int)
 
-    all_values = sorted(value_set, key=int)
+            # préparer les valeurs avec 0 si clé absente
+            prepared_values = {}
+            for func, func_values in fdata.values.items():
+                prepared_values[func] = {val: func_values.get(val, 0) for val in all_values}
 
-    # créer un dict "prêt pour le template"
-    prepared_values = {}
-    for func, func_values in fdata.values.items():
-        prepared_values[func] = {val: func_values.get(val, 0) for val in all_values}
+            cluster_dict["fields"][field] = {
+                "values": prepared_values,
+                "all_values": all_values
+            }
+        stats_dict[cluster] = cluster_dict
 
-    cluster_dict["fields"][field] = {
-        "values": prepared_values,
-        "all_values": all_values
-    }
+
+
+
+
+
+
+<div class="row">
+  <!-- Nav vertical -->
+  <div class="col-2">
+    <div class="nav flex-column nav-pills" id="v-pills-tab" role="tablist">
+      {% for cluster in stats.keys %}
+      <button class="nav-link {% if forloop.first %}active{% endif %}" 
+              id="v-pills-{{ cluster }}-tab" 
+              data-bs-toggle="pill" 
+              data-bs-target="#v-pills-{{ cluster }}" 
+              type="button" 
+              role="tab">
+        {{ cluster }}
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Contenu -->
+  <div class="col-10">
+    <div class="tab-content" id="v-pills-tabContent">
+      {% for cluster, data in stats.items %}
+      <div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
+           id="v-pills-{{ cluster }}" role="tabpanel">
+
+        {% for field, fdata in data.fields.items %}
+        <h5>{{ field|upper }}</h5>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Valeur</th>
+              {% for func in fdata.values.keys %}
+                <th>{{ func|upper }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for val in fdata.all_values %}
+            <tr>
+              <td>{{ val }}</td>
+              {% for func, func_values in fdata.values.items %}
+                <td>{{ func_values[val] }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endfor %}
+
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
