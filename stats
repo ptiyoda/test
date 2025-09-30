@@ -1,26 +1,166 @@
-select_related_fields = ["dynatrace__cluster"]
-prefetch_related_fields = []
+from collections import defaultdict
+from typing import Dict
+from ..models import Host
+from .dataclasses import FieldStats, ClusterStats, StatsResult
 
-for field, options in config.items():
-    source = options.get("source", "host")
-    if source == "metrics":
-        # metrics_set = nom par défaut si pas de related_name
-        if "metrics_set" not in prefetch_related_fields:
-            prefetch_related_fields.append("metrics_set")
+def get_flexible_host_stats_granular(config: Dict[str, dict]) -> StatsResult:
+    clusters: StatsResult = defaultdict(lambda: ClusterStats(
+        fields={field: FieldStats() for field in config.keys()}
+    ))
 
-hosts = Host.objects.select_related(*select_related_fields).prefetch_related(*prefetch_related_fields)
-
-
-
-for host in hosts:
+    # Déterminer dynamiquement select_related et prefetch_related
+    select_related_fields = ["dynatrace__cluster"]
+    prefetch_related_fields = []
     for field, options in config.items():
-        source = options.get("source", "host")
-        group_by_function = options.get("group_by_function", False)
+        if options.get("source") and options["source"] != "host":
+            # Ajouter le prefetch pour toutes les sources liées
+            table_name = options["source"] + "_set"  # convention Django
+            if table_name not in prefetch_related_fields:
+                prefetch_related_fields.append(table_name)
 
-        if source == "host":
-            value = getattr(host, field, 0)
-        elif source == "metrics":
-            metrics = host.metrics_set.first()  # ou .all() selon tes besoins
-            value = getattr(metrics, field, 0) if metrics else 0
+    hosts = Host.objects.select_related(*select_related_fields).prefetch_related(*prefetch_related_fields)
 
-        # reste de la logique pour FieldStats identique
+    for host in hosts:
+        dyn = getattr(host, "dynatrace", None)
+        if dyn is None:
+            continue  # pas de Dynatrace lié
+
+        cluster_name = dyn.cluster.name
+
+        for field, options in config.items():
+            source = options.get("source", "host")
+            group_by_function = options.get("group_by_function", False)
+
+            if source == "host":
+                value = getattr(host, field, 0)
+            else:
+                related_qs = getattr(host, f"{source}_set", None)
+                related_obj = related_qs.first() if related_qs else None
+                value = getattr(related_obj, field, 0) if related_obj else 0
+
+            field_stats: FieldStats = clusters[cluster_name].fields[field]
+            key = str(value)
+
+            if group_by_function:
+                function: str = host.function if host.function in ["node", "ag"] else "other"
+                if function not in field_stats.values:
+                    field_stats.values[function] = defaultdict(int)
+                field_stats.values[function][key] += 1
+            else:
+                if "all" not in field_stats.values:
+                    field_stats.values["all"] = defaultdict(int)
+                field_stats.values["all"][key] += 1
+
+    return clusters
+
+
+
+
+from django.shortcuts import render
+from .services.stats import get_flexible_host_stats_granular
+
+def parse_key(v: str):
+    try:
+        return int(v)
+    except ValueError:
+        try:
+            return float(v)
+        except ValueError:
+            return v  # laisse en str si ce n'est pas un nombre
+
+def stats_view(request):
+    config = {
+        "cpu": {"group_by_function": True, "source": "host"},
+        "ram": {"group_by_function": False, "source": "host"},
+        "disk_io": {"group_by_function": False, "source": "metrics"},  # exemple table liée
+    }
+
+    stats = get_flexible_host_stats_granular(config)
+
+    # Préparer le dict pour le template avec valeurs uniques et triées
+    stats_dict = {}
+    for cluster, data in stats.items():
+        cluster_dict = {"fields": {}}
+        for field, fdata in data.fields.items():
+            # récupérer toutes les valeurs uniques pour ce champ
+            value_set = set()
+            for func_values in fdata.values.values():
+                value_set.update(func_values.keys())
+            all_values = sorted(value_set, key=parse_key)
+
+            # créer une liste de lignes prête pour le template
+            rows = []
+            for val in all_values:
+                row = {"val": val}
+                for func, func_values in fdata.values.items():
+                    row[func] = func_values.get(val, 0)
+                rows.append(row)
+
+            cluster_dict["fields"][field] = {
+                "rows": rows,
+                "funcs": list(fdata.values.keys())
+            }
+        stats_dict[cluster] = cluster_dict
+
+    # trier les clusters par ordre alphabétique
+    sorted_stats = dict(sorted(stats_dict.items(), key=lambda item: item[0]))
+
+    return render(request, "stats.html", {"stats": sorted_stats, "config": config})
+
+
+
+
+{% load custom_filters %}
+<div class="row">
+  <!-- Nav vertical -->
+  <div class="col-2">
+    <div class="nav flex-column nav-pills" id="v-pills-tab" role="tablist">
+      {% for cluster in stats.keys %}
+      <button class="nav-link {% if forloop.first %}active{% endif %}" 
+              id="v-pills-{{ cluster }}-tab" 
+              data-bs-toggle="pill" 
+              data-bs-target="#v-pills-{{ cluster }}" 
+              type="button" 
+              role="tab">
+        {{ cluster }}
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Contenu -->
+  <div class="col-10">
+    <div class="tab-content" id="v-pills-tabContent">
+      {% for cluster, data in stats.items %}
+      <div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
+           id="v-pills-{{ cluster }}" role="tabpanel">
+
+        {% for field, fdata in data.fields.items %}
+        <h5>{{ field|upper }}</h5>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Valeur</th>
+              {% for func in fdata.funcs %}
+                <th>{{ func|upper }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in fdata.rows %}
+            <tr>
+              <td>{{ row.val }}</td>
+              {% for func in fdata.funcs %}
+                <td>{{ row|get_item:func }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endfor %}
+
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
