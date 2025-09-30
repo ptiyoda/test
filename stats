@@ -1,106 +1,104 @@
-# services/stats.py
-from collections import defaultdict
-from .models import Host
-
-from dataclasses import dataclass, field
-from typing import Dict
-
-@dataclass
-class FieldStats:
-    values: Dict[str, int] = field(default_factory=dict)  # ex: 'node', 'ag', 'other', 'all'
-
-@dataclass
-class ClusterStats:
-    fields: Dict[str, FieldStats] = field(default_factory=dict)  # ex: 'cpu', 'ram'
-
-from typing import Dict
-StatsResult = Dict[str, ClusterStats]  # cluster_name -> ClusterStats
-
-
-
 from collections import defaultdict
 from typing import Dict
 from ..models import Host
 from .dataclasses import FieldStats, ClusterStats, StatsResult
 
-def get_flexible_host_stats(config: Dict[str, dict]) -> StatsResult:
+def get_flexible_host_stats_granular(config: Dict[str, dict]) -> StatsResult:
+    """
+    Retourne le nombre de hosts par valeur et par fonction pour chaque champ, par cluster Dynatrace.
+    """
     clusters: StatsResult = defaultdict(lambda: ClusterStats(
         fields={field: FieldStats() for field in config.keys()}
     ))
-    qs = Host.objects.select_related("cluster")
 
-    for host in qs:
-        cluster_name: str = host.cluster.name
+    # Précharger dynatrace et cluster pour éviter N+1
+    hosts = Host.objects.select_related("dynatrace__cluster")
+
+    for host in hosts:
+        cluster_name: str = host.dynatrace.cluster.name
 
         for field, options in config.items():
             value: int = getattr(host, field, 0)
             group_by_function: bool = options.get("group_by_function", False)
 
+            field_stats: FieldStats = clusters[cluster_name].fields[field]
+            key = str(value)
+
             if group_by_function:
                 function: str = host.function if host.function in ["node", "ag"] else "other"
+                if function not in field_stats.values:
+                    field_stats.values[function] = defaultdict(int)
+                field_stats.values[function][key] += 1
             else:
-                function: str = "all"
-
-            field_stats: FieldStats = clusters[cluster_name].fields[field]
-            field_stats.values[function] = field_stats.values.get(function, 0) + value
+                if "all" not in field_stats.values:
+                    field_stats.values["all"] = defaultdict(int)
+                field_stats.values["all"][key] += 1
 
     return clusters
 
 
 
 
-from django.shortcuts import render
-from .services.stats import get_flexible_host_stats, asdict
 
-def stats_view(request):
-    config = {
-        "cpu": {"group_by_function": True},
-        "ram": {"group_by_function": False},
-    }
-
-    stats = get_flexible_host_stats(config)
-
-    # Convert dataclasses en dict pour le template
-    stats_dict = {cluster: asdict(data) for cluster, data in stats.items()}
-
-    return render(request, "stats.html", {"stats": stats_dict, "config": config})
-
-
-
-
-
-{% for cluster, data in stats.items %}
-<div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
-     id="v-pills-{{ cluster }}" role="tabpanel">
-
-  <div class="row">
-    <div class="col-md-6">
-      <table class="table table-striped">
-        <thead>
-          <tr>
-            <th>Function</th>
-            {% for field in data.fields.keys %}
-            <th>{{ field|upper }}</th>
-            {% endfor %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for func in data.fields.values.0.values.keys %}
-          <tr>
-            <td>{{ func }}</td>
-            {% for field, fdata in data.fields.items %}
-              <td>{{ fdata.values|get_item:func|default:"-" }}</td>
-            {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-
-    <div class="col-md-6">
-      <canvas id="chart-{{ cluster }}"></canvas>
+<div class="row">
+  <!-- Nav vertical -->
+  <div class="col-2">
+    <div class="nav flex-column nav-pills" id="v-pills-tab" role="tablist">
+      {% for cluster in stats.keys %}
+      <button class="nav-link {% if forloop.first %}active{% endif %}" 
+              id="v-pills-{{ cluster }}-tab" 
+              data-bs-toggle="pill" 
+              data-bs-target="#v-pills-{{ cluster }}" 
+              type="button" 
+              role="tab">
+        {{ cluster }}
+      </button>
+      {% endfor %}
     </div>
   </div>
 
+  <!-- Contenu -->
+  <div class="col-10">
+    <div class="tab-content" id="v-pills-tabContent">
+      {% for cluster, data in stats.items %}
+      <div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
+           id="v-pills-{{ cluster }}" role="tabpanel">
+
+        {% for field, fdata in data.fields.items %}
+        <h5>{{ field|upper }}</h5>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Valeur</th>
+              {% for func in fdata.values.keys %}
+              <th>{{ func|upper }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% set all_values = [] %}
+            {% for func_values in fdata.values.values %}
+              {% for val in func_values.keys %}
+                {% if val not in all_values %}
+                  {% do all_values.append(val) %}
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+
+            {% for val in all_values|sort %}
+            <tr>
+              <td>{{ val }}</td>
+              {% for func, func_values in fdata.values.items %}
+                <td>{{ func_values.get(val, 0) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endfor %}
+
+      </div>
+      {% endfor %}
+    </div>
+  </div>
 </div>
-{% endfor %}
