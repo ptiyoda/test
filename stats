@@ -1,115 +1,28 @@
-  stats = get_flexible_host_stats_granular(config)
-
-    # préparer pour le template
-    stats_dict = {}
-    for cluster, data in stats.items():
-        cluster_dict = {"fields": {}}
-        for field, fdata in data.items():
-            # récupérer toutes les valeurs uniques pour ce champ
-            value_set = set()
-            for func_values in fdata.values():
-                value_set.update(func_values.keys())
-            all_values = sorted(value_set, key=parse_key)
-
-            # créer les lignes pour le tableau
-            rows = []
-            for val in all_values:
-                row = {"val": val}
-                for func, func_values in fdata.items():
-                    row[func] = func_values.get(val, 0)
-                rows.append(row)
-
-            cluster_dict["fields"][field] = {
-                "rows": rows,
-                "funcs": list(fdata.keys())
-            }
-        stats_dict[cluster] = cluster_dict
-
-    # trier les clusters par ordre alphabétique
-    sorted_stats = dict(sorted(stats_dict.items(), key=lambda item: item[0]))
+<td>
+  {% host_url cluster field func row.val as url %}
+  <a href="{{ url }}">{{ row|get_item:func }}</a>
+</td>
 
 
+# templatetags/custom_filters.py
+from django import template
+from urllib.parse import urlencode
+from django.urls import reverse_lazy
 
+register = template.Library()
 
-def get_flexible_host_stats_granular(config: Dict[str, dict]) -> dict:
-    # cluster -> field -> function -> value -> count
-    clusters: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
+@register.simple_tag
+def host_url(cluster, field, function, value):
+    """
+    Construit un lien vers la vue 'host_list' avec filtres GET.
+    Si function == 'other', ajoute '!' devant la valeur.
+    """
+    url_base = reverse_lazy("host_list")
+    params = {"cluster": cluster}
 
-    # récupérer dynatrace.cluster + fonction + tous les champs demandés
-    fields = ["dynatrace__cluster__name", "function"] + list(config.keys())
-    qs = Host.objects.values(*fields)
+    if function == "other":
+        params[field] = f"!{value}"
+    else:
+        params[field] = value
 
-    for row in qs:
-        cluster = row["dynatrace__cluster__name"]
-
-        for field, options in config.items():
-            group_by_function = options.get("group_by_function", False)
-            value = row.get(field) or "unknown"
-
-            if group_by_function:
-                function = row["function"] if row["function"] in ["node", "ag"] else "other"
-            else:
-                function = "all"
-
-            clusters[cluster][field][function][str(value)] += 1
-
-    return clusters
-
-
-
-
-
-
-<div class="row">
-  <!-- Nav vertical -->
-  <div class="col-2">
-    <div class="nav flex-column nav-pills" id="v-pills-tab" role="tablist">
-      {% for cluster in stats.keys %}
-      <button class="nav-link {% if forloop.first %}active{% endif %}" 
-              id="v-pills-{{ cluster }}-tab" 
-              data-bs-toggle="pill" 
-              data-bs-target="#v-pills-{{ cluster }}" 
-              type="button" 
-              role="tab">
-        {{ cluster }}
-      </button>
-      {% endfor %}
-    </div>
-  </div>
-
-  <!-- Contenu -->
-  <div class="col-10">
-    <div class="tab-content" id="v-pills-tabContent">
-      {% for cluster, data in stats.items %}
-      <div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
-           id="v-pills-{{ cluster }}" role="tabpanel">
-
-        {% for field, fdata in data.fields.items %}
-        <h5 class="mt-3">{{ field|upper }}</h5>
-        <table class="table table-striped">
-          <thead>
-            <tr>
-              <th>Valeur</th>
-              {% for func in fdata.funcs %}
-                <th>{{ func|upper }}</th>
-              {% endfor %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in fdata.rows %}
-            <tr>
-              <td>{{ row.val }}</td>
-              {% for func in fdata.funcs %}
-                <td>{{ row|get_item:func }}</td>
-              {% endfor %}
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        {% endfor %}
-
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-</div>
+    return f"{url_base}?{urlencode(params)}"
