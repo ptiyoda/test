@@ -1,0 +1,124 @@
+# services/stats.py
+from collections import defaultdict
+from .models import Host
+
+def get_host_stats():
+    """
+    Regroupe les hosts par cluster et calcule les stats CPU/RAM
+    selon la fonction (node/AG séparés, le reste groupé).
+    """
+    clusters = defaultdict(lambda: {"cpu": {}, "ram": {}})
+
+    for host in Host.objects.select_related("cluster"):
+        cluster_name = host.cluster.name
+        function = host.function if host.function in ["node", "ag"] else "other"
+
+        # CPU
+        clusters[cluster_name]["cpu"].setdefault(function, 0)
+        clusters[cluster_name]["cpu"][function] += host.cpu
+
+        # RAM
+        clusters[cluster_name]["ram"].setdefault(function, 0)
+        clusters[cluster_name]["ram"][function] += host.ram
+
+    return clusters
+
+
+
+    # views.py
+from django.shortcuts import render
+from .services.stats import get_host_stats
+
+def stats_view(request):
+    stats = get_host_stats()
+    return render(request, "stats.html", {"stats": stats})
+
+
+
+
+
+    {% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="row">
+  <!-- Navigation verticale -->
+  <div class="col-2">
+    <div class="nav flex-column nav-pills" id="v-pills-tab" role="tablist">
+      {% for cluster, data in stats.items %}
+      <button class="nav-link {% if forloop.first %}active{% endif %}" 
+              id="v-pills-{{ cluster }}-tab" 
+              data-bs-toggle="pill" 
+              data-bs-target="#v-pills-{{ cluster }}" 
+              type="button" 
+              role="tab">
+        {{ cluster }}
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Contenu -->
+  <div class="col-10">
+    <div class="tab-content" id="v-pills-tabContent">
+      {% for cluster, data in stats.items %}
+      <div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
+           id="v-pills-{{ cluster }}" role="tabpanel">
+
+        <div class="row">
+          <!-- Tableau -->
+          <div class="col-md-6">
+            <table class="table table-striped">
+              <thead>
+                <tr><th>Function</th><th>CPU</th><th>RAM</th></tr>
+              </thead>
+              <tbody>
+                {% for func, cpu in data.cpu.items %}
+                <tr>
+                  <td>{{ func }}</td>
+                  <td>{{ cpu }}</td>
+                  <td>{{ data.ram|get_item:func|default:"-" }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Graphique -->
+          <div class="col-md-6">
+            <canvas id="chart-{{ cluster }}"></canvas>
+          </div>
+        </div>
+
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  {% for cluster, data in stats.items %}
+  new Chart(document.getElementById("chart-{{ cluster }}"), {
+    type: 'bar',
+    data: {
+      labels: {{ data.cpu.keys|list|safe }},
+      datasets: [
+        {
+          label: "CPU",
+          data: {{ data.cpu.values|list|safe }},
+          backgroundColor: "rgba(75, 192, 192, 0.6)"
+        },
+        {
+          label: "RAM",
+          data: {{ data.ram.values|list|safe }},
+          backgroundColor: "rgba(153, 102, 255, 0.6)"
+        }
+      ]
+    }
+  });
+  {% endfor %}
+});
+</script>
+{% endblock %}
