@@ -1,32 +1,29 @@
+
 def get_flexible_host_stats_granular(config: dict) -> dict:
-    clusters = {}
+    clusters: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
 
     for field, options in config.items():
         source = options.get("source", "host")
         group_by_function = options.get("group_by_function", False)
 
         if source == "host":
-            qs = Host.objects.values(
-                "dynatrace__cluster__name", "function", field
-            )
+            qs = Host.objects.values("id", "dynatrace__cluster__name", "function", field)
         else:
-            # relation inverse type metrics
-            qs = Host.objects.values(
-                "dynatrace__cluster__name", "function", f"{source}__{field}"
-            )
-
-        qs = qs.annotate(host_count=Count("id"))
+            qs = Host.objects.values("id", "dynatrace__cluster__name", "function", f"{source}__{field}")
 
         for row in qs:
             cluster = row["dynatrace__cluster__name"]
-            value = row.get(field) or row.get(f"{source}__{field}") or "unknown"
+            value = (
+                row.get(field)
+                if source == "host"
+                else row.get(f"{source}__{field}")
+            ) or "unknown"
 
             if group_by_function:
                 function = row["function"] if row["function"] in ["node", "ag"] else "other"
             else:
                 function = "all"
 
-            clusters.setdefault(cluster, {}).setdefault(field, {}).setdefault(function, {})
-            clusters[cluster][field][function][str(value)] = row["host_count"]
+            clusters[cluster][field][function][str(value)] += 1
 
     return clusters
