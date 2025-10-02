@@ -1,28 +1,43 @@
-<td>
-  {% host_url cluster field func row.val as url %}
-  <a href="{{ url }}">{{ row|get_item:func }}</a>
-</td>
-
-
-# templatetags/custom_filters.py
-from django import template
-from urllib.parse import urlencode
-from django.urls import reverse_lazy
-
-register = template.Library()
-
-@register.simple_tag
-def host_url(cluster, field, function, value):
+@register.filter
+def row_total(row, funcs):
     """
-    Construit un lien vers la vue 'host_list' avec filtres GET.
-    Si function == 'other', ajoute '!' devant la valeur.
+    Calcule le total pour une ligne donnée en additionnant
+    toutes les colonnes de la liste funcs.
     """
-    url_base = reverse_lazy("host_list")
-    params = {"cluster": cluster}
+    total = 0
+    for func in funcs:
+        total += row.get(func, 0)
+    return total
 
-    if function == "other":
-        params[field] = f"!{value}"
-    else:
-        params[field] = value
 
-    return f"{url_base}?{urlencode(params)}"
+
+<table class="table table-striped mb-5">
+  <thead>
+    <tr>
+      <th>Valeur</th>
+      {% for func in fdata.funcs %}
+        <th>{{ func|upper }}</th>
+      {% endfor %}
+      {% if fdata.funcs|length > 1 %}
+        <th>TOTAL</th>
+      {% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in fdata.rows %}
+    <tr>
+      <td>{{ row.val }}</td>
+      {% for func in fdata.funcs %}
+        <td>
+          <a href="{% host_url cluster field func row.val %}">
+            {{ row|get_item:func }}
+          </a>
+        </td>
+      {% endfor %}
+      {% if fdata.funcs|length > 1 %}
+        <td><strong>{{ row|row_total:fdata.funcs }}</strong></td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
