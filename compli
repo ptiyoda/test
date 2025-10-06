@@ -1,0 +1,154 @@
+class ComplianceRule(models.Model):
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    description = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.content_type.model} compliance"
+
+
+class ComplianceCondition(models.Model):
+    OPS = [
+        ("eq", "Equal"),
+        ("neq", "Not equal"),
+        ("in", "In list"),
+        ("nin", "Not in list"),
+        ("gte", "Greater or equal"),
+        ("lte", "Less or equal"),
+    ]
+
+    rule = models.ForeignKey(ComplianceRule, related_name="conditions", on_delete=models.CASCADE)
+    field = models.CharField(max_length=50)
+    operator = models.CharField(max_length=10, choices=OPS)
+    value = models.JSONField()  # ex: "2" ou ["2", "3"]
+
+    def __str__(self):
+        return f"{self.field} {self.operator} {self.value}"
+
+
+
+
+
+
+  import operator
+from packaging import version
+
+OPS = {
+    "eq": operator.eq,
+    "neq": operator.ne,
+    "in": lambda a, b: a in b,
+    "nin": lambda a, b: a not in b,
+    "gte": lambda a, b: version.parse(str(a)) >= version.parse(str(b)),
+    "lte": lambda a, b: version.parse(str(a)) <= version.parse(str(b)),
+}
+
+def evaluate_condition(obj, cond):
+    value = getattr(obj, cond.field, None)
+    cmp = OPS[cond.operator]
+
+    # gérer liste vs valeur simple
+    if isinstance(cond.value, list):
+        return cmp(value, cond.value)
+    else:
+        return cmp(value, cond.value)
+
+
+def classify_object(obj, rule):
+    """
+    Vérifie si l'objet respecte la règle :
+    - Toutes les conditions doivent être respectées pour être 'target'
+    - Si au moins une est en acceptable → 'acceptable'
+    - Sinon → 'obsolete'
+    """
+    results = [evaluate_condition(obj, cond) for cond in rule.conditions.all()]
+
+    if all(results):
+        return "target"
+    elif any(results):
+        return "acceptable"
+    return "obsolete"
+
+
+
+
+
+  def compliance_stats(model_class=None, queryset=None):
+    stats = []
+    rules = ComplianceRule.objects.all()
+
+    if model_class:
+        rules = rules.filter(content_type__model=model_class._meta.model_name)
+
+    for rule in rules:
+        model_cls = rule.content_type.model_class()
+        objects = queryset if (queryset and queryset.model == model_cls) else model_cls.objects.all()
+
+        buckets = {"target": [], "acceptable": [], "obsolete": []}
+
+        for obj in objects:
+            cat = classify_object(obj, rule)
+            buckets[cat].append(obj)
+
+        counts = {k: len(v) for k, v in buckets.items()}
+        total = sum(counts.values())
+
+        stats.append({
+            "rule": rule,
+            "model": model_cls.__name__,
+            "counts": counts,
+            "total": total,
+            "percent_target": (counts["target"] / total * 100) if total else 0,
+            "percent_acceptable": (counts["acceptable"] / total * 100) if total else 0,
+            "percent_obsolete": (counts["obsolete"] / total * 100) if total else 0,
+        })
+
+    return stats
+
+
+
+
+  from django.contrib import admin
+from django.contrib.contenttypes.models import ContentType
+from .models import ComplianceRule, ComplianceCondition
+
+
+class ComplianceConditionInline(admin.TabularInline):
+    model = ComplianceCondition
+    extra = 1
+    fields = ("field", "operator", "value")
+    autocomplete_fields = []
+    verbose_name = "Condition"
+    verbose_name_plural = "Conditions"
+
+    # Optionnel : rendre value plus lisible
+    def formfield_for_dbfield(self, db_field, **kwargs):
+        formfield = super().formfield_for_dbfield(db_field, **kwargs)
+        if db_field.name == "value":
+            formfield.help_text = (
+                "Valeur ou liste de valeurs (ex: 2 ou [2,3] ou ['Ubuntu','Debian'])"
+            )
+        return formfield
+
+
+@admin.register(ComplianceRule)
+class ComplianceRuleAdmin(admin.ModelAdmin):
+    list_display = ("id", "content_type", "description", "conditions_count")
+    list_filter = ("content_type",)
+    search_fields = ("description",)
+    inlines = [ComplianceConditionInline]
+
+    fieldsets = (
+        (None, {
+            "fields": ("content_type", "description"),
+        }),
+    )
+
+    def conditions_count(self, obj):
+        return obj.conditions.count()
+    conditions_count.short_description = "Nb conditions"
+
+
+@admin.register(ComplianceCondition)
+class ComplianceConditionAdmin(admin.ModelAdmin):
+    list_display = ("id", "rule", "field", "operator", "value")
+    list_filter = ("operator", "field")
+    search_fields = ("field", "value")
