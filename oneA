@@ -1,0 +1,117 @@
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ==========================
+# Configuration
+# ==========================
+# liste de dicts : chaque env/cluster avec son token et URL
+ENVIRONMENTS = [
+    {"env_name": "Prod Cluster 1", "env_url": "https://ENV1.live.dynatrace.com", "api_token": "TOKEN1"},
+    {"env_name": "Prod Cluster 2", "env_url": "https://ENV2.live.dynatrace.com", "api_token": "TOKEN2"},
+    # ajouter d'autres environnements ici
+]
+
+# ==========================
+# Fonctions utilitaires
+# ==========================
+
+def get_oneagents(env):
+    """Récupère tous les OneAgents OUTDATED pour un environnement (pagination gérée séquentiellement)"""
+    base_url = f"{env['env_url']}/api/v1/oneagents"
+    headers = {"Authorization": f"Api-Token {env['api_token']}"}
+    params = {"updateStatus": "OUTDATED"}
+
+    results = []
+    next_page_key = None
+
+    while True:
+        if next_page_key:
+            params = {"nextPageKey": next_page_key}
+
+        resp = requests.get(base_url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        hosts = data.get("hosts", [])
+        results.extend(hosts)
+
+        next_page_key = data.get("nextPageKey")
+        if not next_page_key:
+            break
+
+    return results
+
+def get_auto_update_problems(env):
+    """Récupère les messages d'erreur auto-update pour un environnement"""
+    url = f"{env['env_url']}/api/v1/oneagents/autoUpdateProblems"
+    headers = {"Authorization": f"Api-Token {env['api_token']}"}
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+def determine_reason(host):
+    """Détermine la cause probable de l'outdated"""
+    status = host.get("updateStatus")
+    auto_update = host.get("autoUpdateSetting")
+    current_version = host.get("agentVersion")
+    available_versions = host.get("availableVersions", [])
+    latest_version = max(available_versions) if available_versions else None
+
+    if status == "UPDATE_PROBLEM":
+        return "Problème lors de l'auto-update"
+    if auto_update in ("DISABLED", None):
+        return "Auto-update désactivé ou hérité"
+    if latest_version and current_version != latest_version:
+        return f"Version installée ({current_version}) < dernière disponible ({latest_version})"
+    return "Raison inconnue"
+
+def process_environment(env):
+    """Processus complet pour un environnement : OneAgents + AutoUpdateProblems"""
+    print(f"=== Processing {env['env_name']} ===")
+    hosts = get_oneagents(env)
+    problems = get_auto_update_problems(env)
+
+    # Mapping problems par entityId
+    problem_map = {p["entityId"]: p.get("description") for p in problems}
+
+    # Construire le rapport par host
+    report = []
+    for h in hosts:
+        entity_id = h.get("entityId")
+        report.append({
+            "env": env['env_name'],
+            "server_name": h.get("displayName", "N/A"),
+            "os": h.get("osType", "N/A"),
+            "version": h.get("agentVersion", "N/A"),
+            "status": h.get("updateStatus", "N/A"),
+            "auto_update": h.get("autoUpdateSetting", "N/A"),
+            "host_group": h.get("hostGroup", "N/A"),
+            "network_zone": h.get("networkZone", "N/A"),
+            "cause_probable": determine_reason(h),
+            "auto_update_error": problem_map.get(entity_id, "")
+        })
+    return report
+
+# ==========================
+# Exécution multithread
+# ==========================
+if __name__ == "__main__":
+    final_report = []
+
+    # Limite le nombre de threads pour ne pas saturer l'API
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_env = {executor.submit(process_environment, env): env for env in ENVIRONMENTS}
+
+        for future in as_completed(future_to_env):
+            env = future_to_env[future]
+            try:
+                env_report = future.result()
+                final_report.extend(env_report)
+            except Exception as e:
+                print(f"Erreur lors du traitement de {env['env_name']}: {e}")
+
+    # Affichage rapide
+    for row in final_report:
+        print(f"{row['env']} | {row['server_name']} | {row['os']} | {row['version']} | "
+              f"{row['status']} | {row['auto_update']} | {row['host_group']} | {row['network_zone']} | "
+              f"{row['cause_probable']} | {row['auto_update_error']}")
