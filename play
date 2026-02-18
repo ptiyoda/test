@@ -1,0 +1,69 @@
+---
+- name: Monitor Dynatrace Managed rolling upgrade (today only)
+  hosts: dynatrace_cluster
+  gather_facts: yes
+  become: yes
+
+  vars:
+    dynatrace_update_dir: /var/lib/dynatrace/server/update
+
+  tasks:
+
+    - name: Set today's date (format YYYYMMDD)
+      set_fact:
+        today_date: "{{ ansible_date_time.date | regex_replace('-', '') }}"
+
+    - name: Find today's Dynatrace update logs
+      shell: |
+        ls -t {{ dynatrace_update_dir }}/{{ today_date }}*.log 2>/dev/null | head -1
+      register: latest_update_file
+      changed_when: false
+      failed_when: false
+
+    - name: Define upgrade step from filename
+      set_fact:
+        upgrade_step: >-
+          {% if latest_update_file.stdout == "" %}
+            NO UPGRADE RUNNING TODAY
+          {% elif 'system-check' in latest_update_file.stdout %}
+            1/3 - System Check
+          {% elif 'nodekeeper' in latest_update_file.stdout %}
+            2/3 - Nodekeeper Upgrade
+          {% elif 'managed' in latest_update_file.stdout %}
+            3/3 - Managed Upgrade
+          {% else %}
+            UNKNOWN STEP
+          {% endif %}
+
+    - name: Get last line of update file
+      shell: tail -1 {{ latest_update_file.stdout }}
+      register: last_line
+      when: latest_update_file.stdout != ""
+      changed_when: false
+
+    - name: Extract percentage from last line
+      set_fact:
+        upgrade_percent: "{{ last_line.stdout | regex_search('([0-9]+)%', '\\1') | first | default('0') }}"
+      when: latest_update_file.stdout != ""
+
+    - name: Determine upgrade status
+      set_fact:
+        upgrade_status: >-
+          {% if upgrade_percent | int == 100 %}
+            COMPLETED
+          {% else %}
+            IN PROGRESS
+          {% endif %}
+      when: latest_update_file.stdout != ""
+
+    - name: Display node upgrade state
+      debug:
+        msg: |
+          =====================================
+          Node        : {{ inventory_hostname }}
+          Step        : {{ upgrade_step }}
+          Percentage  : {{ upgrade_percent | default('N/A') }}%
+          Status      : {{ upgrade_status | default('N/A') }}
+          File        : {{ latest_update_file.stdout | basename if latest_update_file.stdout != "" else "N/A" }}
+          Last line   : {{ last_line.stdout | default('N/A') }}
+          =====================================
