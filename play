@@ -183,7 +183,7 @@
         # global start / end / duration
         global_start: "{{ (start_times | min) | int if start_times|length > 0 else 0 }}"
         global_end: "{{ (end_times | max) | int if end_times|length > 0 else 0 }}"
-        global_duration: "{{ (global_end - global_start) if global_start > 0 else 0 }}"
+        global_duration: "{{ (global_end | int) - (global_start | int) if (global_start | int) > 0 else 0 }}"
 
         # statut cluster
         global_status: >-
