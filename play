@@ -163,8 +163,8 @@
         total_percent: "{{ node_percent_list | sum }}"
         global_percent: "{{ (total_percent | int / total_nodes | int * 100) | round(2) if (total_nodes | int) > 0 else 0 }}"
 
-        start_times: "{{ nodes | map('extract', hostvars, 'node_start_epoch') | select('>',0) | list }}"
-        end_times: "{{ nodes | map('extract', hostvars, 'node_end_epoch') | select('>',0) | list }}"
+        start_times: "{{ nodes | map('extract', hostvars, 'node_start_epoch') | map('int') | select('>', 0) | list }}"
+        end_times: "{{ nodes | map('extract', hostvars, 'node_end_epoch') | map('int') | select('>', 0) | list }}"
 
         global_start: "{{ start_times | min if start_times|length > 0 else 0 }}"
         global_end: "{{ end_times | max if end_times|length > 0 else 0 }}"
