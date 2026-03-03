@@ -64,12 +64,32 @@
           {%- elif node_percent | int > 0 -%}IN_PROGRESS
           {%- else -%}PENDING{%- endif -%}
 
-    # ── 6. Affichage par nœud ──────────────────────────────────
+    # ── 6. Status + durée par nœud ─────────────────────────────
+    - name: Derive node_status and node_duration
+      set_fact:
+        node_status: >-
+          {%- if node_percent | int == 100 and node_step | trim == '3/3' -%}DONE
+          {%- elif node_percent | int > 0 -%}IN_PROGRESS
+          {%- else -%}PENDING{%- endif -%}
+        node_duration_min: >-
+          {%- set start = node_start_epoch | int -%}
+          {%- set end   = node_end_epoch   | int -%}
+          {%- set now   = ansible_date_time.epoch | int -%}
+          {%- if start == 0 -%}N/A
+          {%- elif node_percent | int == 100 and node_step | trim == '3/3' -%}{{ ((end - start) / 60) | round(1) }}
+          {%- else -%}{{ ((now - start) / 60) | round(1) }}{%- endif -%}
+
+    # ── 7. Affichage par nœud ──────────────────────────────────
     - name: Show node status
       debug:
-        msg: "[{{ inventory_hostname }}] Step={{ node_step | trim }} | {{ node_percent | int }}% | {{ node_status | trim }}"
+        msg:
+          - "Host     : {{ inventory_hostname }}"
+          - "Step     : {{ node_step | trim }}"
+          - "Percent  : {{ node_percent | int }}%"
+          - "Status   : {{ node_status | trim }}"
+          - "{{ 'Duree        : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
 
-    # ── 7. Résumé cluster (run_once) ───────────────────────────
+    # ── 8. Résumé cluster (run_once) ───────────────────────────
     - name: Display cluster summary
       run_once: true
       vars:
