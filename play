@@ -128,19 +128,20 @@
             PENDING
           {% endif %}
 
+
     ############################################################
-    # DISPLAY NODE DETAILS
+    # NODE DETAILS DISPLAY
     ############################################################
 
     - name: Display node details
       debug:
-        msg: |
-          -----------------------------------------
-          Node        : {{ inventory_hostname }}
-          Step        : {{ upgrade_step | trim }}
-          Percentage  : {{ node_percent }} %
-          Status      : {{ node_status | trim }}
-          -----------------------------------------
+        msg:
+          node: "{{ inventory_hostname }}"
+          step: "{{ upgrade_step | trim }}"
+          percent: "{{ node_percent }} %"
+          status: "{{ node_status | trim }}"
+          file: "{{ latest_update_file.stdout | basename if latest_update_file.stdout != '' else 'N/A' }}"
+          last_line: "{{ last_lines.stdout_lines[-1] | default('N/A') }}"
 
     ############################################################
     # GLOBAL SUMMARY WITH TIMING (100% int-safe)
