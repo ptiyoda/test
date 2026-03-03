@@ -62,18 +62,19 @@
           {% endif %}
 
     ############################################################
-    # EXTRACT PERCENTAGE
+    # EXTRACT PROGRESS
     ############################################################
 
-    - name: Extract percentage
+    - name: Extract progress value
       set_fact:
-        node_percent: "{{ last_line.stdout | regex_search('([0-9]+)%', '\\1') | first | default('0') | int }}"
-      when: latest_update_file.stdout != ""
-
-    - name: Default percent if no file
-      set_fact:
-        node_percent: 0
-      when: latest_update_file.stdout == ""
+        node_percent: >-
+          {% if latest_update_file.stdout == "" %}
+            0
+          {% elif last_line.stdout == "SUCCESS" %}
+            100
+          {% else %}
+            {{ (last_line.stdout.split()[3] | default(0)) | int }}
+          {% endif %}
 
     ############################################################
     # DETERMINE NODE STATUS
