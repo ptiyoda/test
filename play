@@ -194,19 +194,14 @@
           {% endif %}
 
       debug:
-        msg: |
-          =====================================================
-          CLUSTER UPGRADE GLOBAL STATUS
-          =====================================================
-          Status               : {{ global_status }}
-          Total nodes          : {{ total_nodes }}
-          Nodes DONE           : {{ done_nodes }}
-          Nodes IN_PROGRESS    : {{ in_progress_nodes }}
-          Nodes PENDING        : {{ pending_nodes }}
-          -----------------------------------------------------
-          GLOBAL PROGRESS      : {{ global_percent }} %
-          -----------------------------------------------------
-          Global start         : {{ (global_start | int) | strftime('%Y-%m-%d %H:%M:%S') if (global_start | int) > 0 else "N/A" }}
-          Global end           : {{ (global_end   | int) | strftime('%Y-%m-%d %H:%M:%S') if (global_end   | int) > 0 else "N/A" }}
-          Total duration (min) : {{ ((global_duration | int) / 60) | round(2) if (global_duration | int) > 0 else "N/A" }}
-          =====================================================
+        msg:
+          cluster_summary:
+            status: "{{ global_status }}"
+            total_nodes: "{{ total_nodes }}"
+            done_nodes: "{{ done_nodes }}"
+            in_progress_nodes: "{{ in_progress_nodes }}"
+            pending_nodes: "{{ pending_nodes }}"
+            global_percent: "{{ global_percent }} %"
+            global_start: "{{ (global_start | int) | strftime('%Y-%m-%d %H:%M:%S') if global_start | int > 0 else 'N/A' }}"
+            global_end: "{{ (global_end | int) | strftime('%Y-%m-%d %H:%M:%S') if global_end | int > 0 else 'N/A' }}"
+            total_duration_min: "{{ ((global_duration | int)/60) | round(2) if global_duration | int > 0 else 'N/A' }}"
