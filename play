@@ -76,14 +76,16 @@
             {{ (last_line.stdout.split()[3] | default(0)) | int }}
           {% endif %}
 
-    ############################################################
-    # DETERMINE NODE STATUS
+  ############################################################
+    # NODE STATUS
     ############################################################
 
     - name: Set node status
       set_fact:
         node_status: >-
-          {% if node_percent == 100 and '3/3' in upgrade_step %}
+          {% if latest_update_file.stdout == "" %}
+            PENDING
+          {% elif last_line.stdout == "SUCCESS" and '3/3' in upgrade_step %}
             DONE
           {% elif node_percent > 0 %}
             IN_PROGRESS
