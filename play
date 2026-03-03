@@ -161,7 +161,7 @@
         pending_nodes: "{{ node_status_list | select('equalto', 'PENDING') | list | length }}"
 
         total_percent: "{{ node_percent_list | sum }}"
-        global_percent: "{{ (total_percent / total_nodes) | round(2) if total_nodes > 0 else 0 }}"
+        global_percent: "{{ (total_percent | int / total_nodes | int * 100) | round(2) if (total_nodes | int) > 0 else 0 }}"
 
         start_times: "{{ nodes | map('extract', hostvars, 'node_start_epoch') | select('>',0) | list }}"
         end_times: "{{ nodes | map('extract', hostvars, 'node_end_epoch') | select('>',0) | list }}"
