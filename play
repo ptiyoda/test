@@ -168,8 +168,10 @@
     - name: Compute dependent global vars
       set_fact:
         global_percent: >-
-          {% if total_nodes > 0 %}
-            {{ (total_percent_int / total_nodes) | round(2) }}
+          {% set t_nodes = total_nodes | int %}
+          {% set t_percent = total_percent_int | int %}
+          {% if t_nodes > 0 %}
+            {{ (t_percent / t_nodes) | round(2) }}
           {% else %}
             0
           {% endif %}
