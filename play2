@@ -33,64 +33,68 @@
       register: stat_output
       when: latest_file.stdout != ""
       changed_when: false
+    
+    # ── 4. Valeurs sûres (guard skipped tasks) ─────────────────
+    - name: Set safe raw values
+      set_fact:
+        _log_found:  "{{ latest_file.stdout | default('') != '' }}"
+        _last_lines: "{{ last_lines.stdout  | default('') if (last_lines  is not skipped and last_lines  is defined) else '' }}"
+        _stat_out:   "{{ stat_output.stdout | default('') if (stat_output is not skipped and stat_output is defined) else '' }}"
 
-    # ── 4. Calcul step / percent / status par nœud ─────────────
+    # ── 5. Calcul step / percent / status par nœud ─────────────
     - name: Compute node facts
       set_fact:
-        node_start_epoch: "{{ (stat_output.stdout.split()[0] | default(0)) | int }}"
-        node_end_epoch:   "{{ (stat_output.stdout.split()[1] | default(0)) | int }}"
+        node_start_epoch: "{{ (_stat_out.split()[0] if _stat_out != '' else '0') | int }}"
+        node_end_epoch:   "{{ (_stat_out.split()[1] if _stat_out != '' else '0') | int }}"
         node_step: >-
-          {%- if latest_file.stdout == '' -%}0/3
-          {%- elif 'system-check' in latest_file.stdout -%}1/3
-          {%- elif 'nodekeeper'   in latest_file.stdout -%}2/3
-          {%- elif 'managed'      in latest_file.stdout -%}3/3
+          {%- if not _log_found | bool -%}0/3
+          {%- elif 'system-check' in (latest_file.stdout | default('')) -%}1/3
+          {%- elif 'nodekeeper'   in (latest_file.stdout | default('')) -%}2/3
+          {%- elif 'managed'      in (latest_file.stdout | default('')) -%}3/3
           {%- else -%}?/3{%- endif -%}
-        node_success: "{{ latest_file.stdout != '' and 'SUCCESS' in (last_lines.stdout | default('')) }}"
-        node_raw_pct: >-
-          {%- if latest_file.stdout == '' -%}0
-          {%- elif 'SUCCESS' in (last_lines.stdout | default('')) -%}100
-          {%- else -%}
-            {{ (last_lines.stdout_lines | default(['']))[-1].split() | 
-               selectattr('search', 'match', '^[0-9]+$') | list | last | default(0) }}
-          {%- endif -%}
-      when: true   # toujours exécuté, même si stat_output skipped
+        node_percent: >-
+          {%- if not _log_found | bool -%}0
+          {%- elif 'SUCCESS' in _last_lines -%}100
+          {%- else -%}{{ _last_lines.split('\n') | last | regex_search('[0-9]+') | default('0') }}{%- endif -%}
 
-    - name: Derive node_percent and node_status
+    - name: Derive node_status
       set_fact:
-        node_percent: "{{ node_raw_pct | int }}"
         node_status: >-
-          {%- if node_raw_pct | int == 100 and node_step == '3/3' -%}DONE
-          {%- elif node_raw_pct | int > 0 -%}IN_PROGRESS
+          {%- if node_percent | int == 100 and node_step | trim == '3/3' -%}DONE
+          {%- elif node_percent | int > 0 -%}IN_PROGRESS
           {%- else -%}PENDING{%- endif -%}
 
-    # ── 5. Affichage par nœud ──────────────────────────────────
+    # ── 6. Affichage par nœud ──────────────────────────────────
     - name: Show node status
       debug:
-        msg: "[{{ inventory_hostname }}] Step={{ node_step }} | {{ node_percent }}% | {{ node_status }}"
+        msg: "[{{ inventory_hostname }}] Step={{ node_step | trim }} | {{ node_percent | int }}% | {{ node_status | trim }}"
 
-    # ── 6. Résumé cluster (run_once sur le 1er nœud) ───────────
-    - name: Build cluster summary
+    # ── 7. Résumé cluster (run_once) ───────────────────────────
+    - name: Display cluster summary
       run_once: true
       vars:
-        all_statuses: "{{ ansible_play_hosts | map('extract', hostvars, 'node_status')  | map('default','PENDING') | list }}"
-        all_percents: "{{ ansible_play_hosts | map('extract', hostvars, 'node_percent') | map('default', 0) | map('int') | list }}"
+        all_statuses: "{{ ansible_play_hosts | map('extract', hostvars, 'node_status')      | map('default', 'PENDING') | map('trim') | list }}"
+        all_percents: "{{ ansible_play_hosts | map('extract', hostvars, 'node_percent')     | map('default', 0) | map('int') | list }}"
         all_starts:   "{{ ansible_play_hosts | map('extract', hostvars, 'node_start_epoch') | map('default', 0) | map('int') | reject('equalto', 0) | list }}"
         all_ends:     "{{ ansible_play_hosts | map('extract', hostvars, 'node_end_epoch')   | map('default', 0) | map('int') | reject('equalto', 0) | list }}"
-        n_total:      "{{ ansible_play_hosts | length }}"
-        n_done:       "{{ all_statuses | select('equalto', 'DONE')        | list | length }}"
-        n_progress:   "{{ all_statuses | select('equalto', 'IN_PROGRESS') | list | length }}"
-        n_pending:    "{{ all_statuses | select('equalto', 'PENDING')     | list | length }}"
+        n_total:      "{{ ansible_play_hosts | length | int }}"
+        n_done:       "{{ all_statuses | select('equalto', 'DONE')        | list | length | int }}"
+        n_progress:   "{{ all_statuses | select('equalto', 'IN_PROGRESS') | list | length | int }}"
+        n_pending:    "{{ all_statuses | select('equalto', 'PENDING')     | list | length | int }}"
         g_pct:        "{{ (all_percents | sum / (ansible_play_hosts | length)) | round(1) }}"
         g_start:      "{{ all_starts | min if all_starts | length > 0 else 0 }}"
         g_end:        "{{ all_ends   | max if all_ends   | length > 0 else 0 }}"
-        g_dur_min:    "{{ (( g_end | int - g_start | int ) / 60) | round(1) if g_start | int > 0 else 'N/A' }}"
-        g_status:     "{{ 'COMPLETED' if n_done | int == n_total | int and n_total | int > 0 else 'IN_PROGRESS' }}"
+        g_dur_min:    "{{ ((all_ends | max | int - all_starts | min | int) / 60) | round(1) if all_starts | length > 0 and all_ends | length > 0 else 'N/A' }}"
+        g_status:     "{{ 'COMPLETED' if (all_statuses | select('equalto', 'DONE') | list | length | int) == (ansible_play_hosts | length | int) and (ansible_play_hosts | length | int) > 0 else 'IN_PROGRESS' }}"
       debug:
-        msg: >-
-          ═══ CLUSTER SUMMARY ═══
-          Status   : {{ g_status }}
-          Nodes    : {{ n_total }} (DONE={{ n_done }} | IN_PROGRESS={{ n_progress }} | PENDING={{ n_pending }})
-          Progress : {{ g_pct }}%
-          Start    : {{ g_start | int | strftime('%Y-%m-%d %H:%M:%S') if g_start | int > 0 else 'N/A' }}
-          End      : {{ g_end   | int | strftime('%Y-%m-%d %H:%M:%S') if g_end   | int > 0 else 'N/A' }}
-          Duration : {{ g_dur_min }} min
+        msg:
+          - "═══════════════════════════════════════"
+          - "         CLUSTER UPGRADE SUMMARY       "
+          - "═══════════════════════════════════════"
+          - "Status   : {{ g_status }}"
+          - "Nodes    : {{ n_total }}  (DONE={{ n_done }} | IN_PROGRESS={{ n_progress }} | PENDING={{ n_pending }})"
+          - "Progress : {{ g_pct }}%"
+          - "Start    : {{ g_start | int | strftime('%Y-%m-%d %H:%M:%S') if g_start | int > 0 else 'N/A' }}"
+          - "End      : {{ g_end   | int | strftime('%Y-%m-%d %H:%M:%S') if g_end   | int > 0 else 'N/A' }}"
+          - "Duration : {{ g_dur_min }} min"
+          - "═══════════════════════════════════════"
