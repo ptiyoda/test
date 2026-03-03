@@ -142,21 +142,21 @@
           file: "{{ latest_update_file.stdout | basename if latest_update_file.stdout != '' else 'N/A' }}"
           last_line: "{{ last_lines.stdout_lines[-1] | default('N/A') }}"
 
+
     ############################################################
-    # BUILD GLOBAL SUMMARY - INT-SAFE & GUI-FRIENDLY
+    # BUILD GLOBAL SUMMARY
     ############################################################
-    
-    - name: Initialize global node lists
+    - name: Initialize global lists
       set_fact:
         node_status_list: []
         node_percent_list: []
-    
-    - name: Populate global node lists
+
+    - name: Populate global lists
       set_fact:
-        node_status_list: "{{ node_status_list + [ hostvars[item].node_status | default('PENDING') ] }}"
-        node_percent_list: "{{ node_percent_list + [ hostvars[item].node_percent | default(0) | int ] }}"
+        node_status_list: "{{ node_status_list + [ hostvars[item].status | default('PENDING') ] }}"
+        node_percent_list: "{{ node_percent_list + [ hostvars[item].percent | default(0) | int ] }}"
       loop: "{{ ansible_play_hosts }}"
-    
+
     - name: Set independent global vars
       set_fact:
         total_nodes: "{{ ansible_play_hosts | length | int }}"
@@ -164,21 +164,24 @@
         done_nodes: "{{ node_status_list | select('equalto','DONE') | list | length | int }}"
         in_progress_nodes: "{{ node_status_list | select('equalto','IN_PROGRESS') | list | length | int }}"
         pending_nodes: "{{ node_status_list | select('equalto','PENDING') | list | length | int }}"
-    
+
+    - name: Build start/end lists int-safe
+      set_fact:
+        start_times: >-
+          {{ ansible_play_hosts | map('extract', hostvars, 'node_start_epoch') | map('default',0) | map('int') | select('>',0) | list }}
+        end_times: >-
+          {{ ansible_play_hosts | map('extract', hostvars, 'node_end_epoch') | map('default',0) | map('int') | select('>',0) | list }}
+
     - name: Compute dependent global vars
       set_fact:
         global_percent: >-
-          {% set t_nodes = total_nodes | int %}
-          {% set t_percent = total_percent_int | int %}
-          {% if t_nodes > 0 %}
-            {{ (t_percent / t_nodes) | round(2) }}
+          {% if total_nodes > 0 %}
+            {{ (total_percent_int / total_nodes) | round(2) }}
           {% else %}
             0
           {% endif %}
-        start_times: "{{ ansible_play_hosts | map('extract', hostvars, 'node_start_epoch') | map('default',0) | map('int') | select('>',0) | list }}"
-        end_times: "{{ ansible_play_hosts | map('extract', hostvars, 'node_end_epoch') | map('default',0) | map('int') | select('>',0) | list }}"
-        global_start: "{{ (start_times | min) | int if start_times | length > 0 else 0 }}"
-        global_end: "{{ (end_times | max) | int if end_times | length > 0 else 0 }}"
+        global_start: "{{ start_times | min if start_times | length > 0 else 0 }}"
+        global_end: "{{ end_times | max if end_times | length > 0 else 0 }}"
         global_duration: "{{ (global_end - global_start) if global_start > 0 else 0 }}"
         global_status: >-
           {% if done_nodes == total_nodes and total_nodes > 0 %}
@@ -186,17 +189,7 @@
           {% else %}
             IN_PROGRESS
           {% endif %}
-    
+
     - name: Display cluster summary (GUI-friendly)
       debug:
-        msg:
-          cluster_summary:
-            status: "{{ global_status }}"
-            total_nodes: "{{ total_nodes }}"
-            done_nodes: "{{ done_nodes }}"
-            in_progress_nodes: "{{ in_progress_nodes }}"
-            pending_nodes: "{{ pending_nodes }}"
-            global_percent: "{{ global_percent }} %"
-            global_start: "{{ (global_start | int)  }}"
-            global_end: "{{ (global_end | int) }}"
-            total_duration_min: "{{ ((global_duration | int)/60) | round(2) if global_duration | int > 0 else 'N/A' }}"
+        msg: "Cluster Status: {{ global_status }} | Nodes: {{ total_nodes }} | DONE: {{ done_nodes }} | IN_PROGRESS: {{ in_progress_nodes }} | PENDING: {{ pending_nodes }} | Global %: {{ global_percent }}% | Start: {{ global_start | int | strftime('%Y-%m-%d %H:%M:%S') if global_start > 0 else 'N/A' }} | End: {{ global_end | int | strftime('%Y-%m-%d %H:%M:%S') if global_end > 0 else 'N/A' }} | Duration(min): {{ (global_duration/60) | round(2) if global_duration > 0 else 'N/A' }}"
