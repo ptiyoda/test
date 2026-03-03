@@ -1,7 +1,7 @@
 ---
 - name: Dynatrace Managed - Cluster Upgrade Monitoring
   hosts: dynatrace_cluster
-  gather_facts: no
+  gather_facts: yes
   become: yes
 
   vars:
@@ -10,16 +10,12 @@
   tasks:
 
     ############################################################
-    # GET TODAY DATE
+    # DEFINE DATE (VAR OR TODAY)
     ############################################################
 
-    - name: Get today's date (YYYYMMDD)
-      command: date +%Y%m%d
-      register: today_date_cmd
-      changed_when: false
-
-    - set_fact:
-        today_date: "{{ today_date_cmd.stdout }}"
+    - name: Define effective upgrade date (YYYYMMDD)
+      set_fact:
+        today_date: "{{ upgrade_date | default(ansible_date_time.date | regex_replace('-', '')) }}"
 
     ############################################################
     # FIND TODAY UPDATE FILE
@@ -33,17 +29,41 @@
       failed_when: false
 
     ############################################################
-    # GET LAST LINE IF FILE EXISTS
+    # GET LAST 2 LINES
     ############################################################
 
-    - name: Get last line of update file
-      shell: tail -1 {{ latest_update_file.stdout }}
-      register: last_line
+    - name: Get last 2 lines of update file
+      shell: tail -2 {{ latest_update_file.stdout }}
+      register: last_lines
       when: latest_update_file.stdout != ""
       changed_when: false
 
     ############################################################
-    # DETERMINE STEP 1/3 - 2/3 - 3/3
+    # GET NODE START / END TIME
+    ############################################################
+
+    - name: Get first file creation epoch
+      shell: |
+        stat -c "%Z" $(ls {{ dynatrace_update_dir }}/{{ today_date }}*.log | head -1)
+      register: node_start_epoch_raw
+      when: latest_update_file.stdout != ""
+      changed_when: false
+
+    - name: Get last file modification epoch
+      shell: |
+        stat -c "%Y" $(ls -t {{ dynatrace_update_dir }}/{{ today_date }}*.log | head -1)
+      register: node_end_epoch_raw
+      when: latest_update_file.stdout != ""
+      changed_when: false
+
+    - name: Set node timing facts
+      set_fact:
+        node_start_epoch: "{{ node_start_epoch_raw.stdout | default(0) | int }}"
+        node_end_epoch: "{{ node_end_epoch_raw.stdout | default(0) | int }}"
+      when: latest_update_file.stdout != ""
+
+    ############################################################
+    # DETERMINE STEP (1/3,2/3,3/3)
     ############################################################
 
     - name: Determine upgrade step
@@ -62,7 +82,16 @@
           {% endif %}
 
     ############################################################
-    # EXTRACT PROGRESS
+    # DETECT SUCCESS
+    ############################################################
+
+    - name: Check if SUCCESS exists
+      set_fact:
+        success_detected: "{{ 'SUCCESS' in last_lines.stdout }}"
+      when: latest_update_file.stdout != ""
+
+    ############################################################
+    # EXTRACT PROGRESS VALUE
     ############################################################
 
     - name: Extract progress value
@@ -70,14 +99,20 @@
         node_percent: >-
           {% if latest_update_file.stdout == "" %}
             0
-          {% elif last_line.stdout == "SUCCESS" %}
+          {% elif success_detected %}
             100
           {% else %}
-            {{ (last_line.stdout.split()[3] | default(0)) | int }}
+            {{
+              (
+                last_lines.stdout_lines[-1].split()[3]
+                if last_lines.stdout_lines[-1].split()|length > 3
+                else 0
+              ) | int
+            }}
           {% endif %}
 
-  ############################################################
-    # NODE STATUS
+    ############################################################
+    # DETERMINE NODE STATUS
     ############################################################
 
     - name: Set node status
@@ -85,7 +120,7 @@
         node_status: >-
           {% if latest_update_file.stdout == "" %}
             PENDING
-          {% elif last_line.stdout == "SUCCESS" and '3/3' in upgrade_step %}
+          {% elif success_detected and '3/3' in upgrade_step %}
             DONE
           {% elif node_percent > 0 %}
             IN_PROGRESS
@@ -94,44 +129,62 @@
           {% endif %}
 
     ############################################################
-    # DISPLAY PER NODE DETAILS
+    # DISPLAY NODE DETAILS
     ############################################################
 
-    - name: Display node upgrade details
+    - name: Display node details
       debug:
         msg: |
           -----------------------------------------
           Node        : {{ inventory_hostname }}
-          Step        : {{ upgrade_step }}
+          Step        : {{ upgrade_step | trim }}
           Percentage  : {{ node_percent }} %
-          Status      : {{ node_status }}
-          File        : {{ latest_update_file.stdout | basename if latest_update_file.stdout != "" else "N/A" }}
-          Last line   : {{ last_line.stdout | default("N/A") }}
+          Status      : {{ node_status | trim }}
           -----------------------------------------
 
     ############################################################
-    # GLOBAL CLUSTER SUMMARY
+    # GLOBAL SUMMARY WITH TIMING
     ############################################################
 
     - name: Build global summary
       run_once: true
       vars:
-        all_nodes: "{{ groups['dynatrace_cluster'] }}"
-        total_nodes: "{{ all_nodes | length }}"
-        total_percent: "{{ all_nodes | map('extract', hostvars, 'node_percent') | sum }}"
-        done_nodes: "{{ all_nodes | select('extract', hostvars, 'node_status') | select('equalto', 'DONE') | list | length }}"
-        in_progress_nodes: "{{ all_nodes | select('extract', hostvars, 'node_status') | select('equalto', 'IN_PROGRESS') | list | length }}"
-        pending_nodes: "{{ all_nodes | select('extract', hostvars, 'node_status') | select('equalto', 'PENDING') | list | length }}"
+        nodes: "{{ ansible_play_hosts }}"
+        total_nodes: "{{ nodes | length }}"
+        total_percent: "{{ nodes | map('extract', hostvars, 'node_percent') | map('int') | sum }}"
+        done_nodes: "{{ nodes | select('extract', hostvars, 'node_status') | select('equalto', 'DONE') | list | length }}"
+        in_progress_nodes: "{{ nodes | select('extract', hostvars, 'node_status') | select('equalto', 'IN_PROGRESS') | list | length }}"
+        pending_nodes: "{{ nodes | select('extract', hostvars, 'node_status') | select('equalto', 'PENDING') | list | length }}"
         global_percent: "{{ (total_percent / total_nodes) | round(2) }}"
+
+        start_times: "{{ nodes | map('extract', hostvars, 'node_start_epoch') | select('>',0) | list }}"
+        end_times: "{{ nodes | map('extract', hostvars, 'node_end_epoch') | select('>',0) | list }}"
+
+        global_start: "{{ start_times | min if start_times|length > 0 else 0 }}"
+        global_end: "{{ end_times | max if end_times|length > 0 else 0 }}"
+        global_duration: "{{ global_end - global_start if global_start > 0 else 0 }}"
+
+        global_status: >-
+          {% if done_nodes == total_nodes and total_nodes > 0 %}
+            COMPLETED
+          {% else %}
+            IN_PROGRESS
+          {% endif %}
+
       debug:
         msg: |
-          =============================================
+          =====================================================
           CLUSTER UPGRADE GLOBAL STATUS
-          =============================================
-          Total nodes        : {{ total_nodes }}
-          Nodes DONE         : {{ done_nodes }}
-          Nodes IN_PROGRESS  : {{ in_progress_nodes }}
-          Nodes PENDING      : {{ pending_nodes }}
-          ---------------------------------------------
-          GLOBAL PROGRESS    : {{ global_percent }} %
-          =============================================
+          =====================================================
+          Status               : {{ global_status | trim }}
+          Total nodes          : {{ total_nodes }}
+          Nodes DONE           : {{ done_nodes }}
+          Nodes IN_PROGRESS    : {{ in_progress_nodes }}
+          Nodes PENDING        : {{ pending_nodes }}
+          -----------------------------------------------------
+          GLOBAL PROGRESS      : {{ global_percent }} %
+          -----------------------------------------------------
+          Global start         : {{ global_start | strftime('%Y-%m-%d %H:%M:%S') if global_start > 0 else "N/A" }}
+          Global end           : {{ global_end | strftime('%Y-%m-%d %H:%M:%S') if global_end > 0 else "N/A" }}
+          Total duration (min) : {{ (global_duration / 60) | round(2) if global_duration > 0 else "N/A" }}
+          =====================================================
