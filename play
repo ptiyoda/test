@@ -157,6 +157,10 @@
         node_percent_list: "{{ node_percent_list + [ hostvars[item].node_percent | default(0) | int ] }}"
       loop: "{{ ansible_play_hosts }}"
 
+    - name: Set total_nodes first
+      set_fact:
+        total_nodes: "{{ ansible_play_hosts | length | int }}"
+
     - name: Compute global summary
       run_once: true
       set_fact:
