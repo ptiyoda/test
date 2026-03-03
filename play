@@ -206,7 +206,7 @@
           -----------------------------------------------------
           GLOBAL PROGRESS      : {{ global_percent }} %
           -----------------------------------------------------
-          Global start         : {{ global_start | strftime('%Y-%m-%d %H:%M:%S') if global_start > 0 else "N/A" }}
-          Global end           : {{ global_end | strftime('%Y-%m-%d %H:%M:%S') if global_end > 0 else "N/A" }}
-          Total duration (min) : {{ (global_duration / 60) | round(2) if global_duration > 0 else "N/A" }}
+          Global start         : {{ (global_start | int) | strftime('%Y-%m-%d %H:%M:%S') if (global_start | int) > 0 else "N/A" }}
+          Global end           : {{ (global_end   | int) | strftime('%Y-%m-%d %H:%M:%S') if (global_end   | int) > 0 else "N/A" }}
+          Total duration (min) : {{ ((global_duration | int) / 60) | round(2) if (global_duration | int) > 0 else "N/A" }}
           =====================================================
