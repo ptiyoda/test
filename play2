@@ -14,38 +14,52 @@
       set_fact:
         today_date: "{{ upgrade_date | default(ansible_date_time.date | replace('-', '')) }}"
 
-    # ── 2. Fichier de log le plus récent ───────────────────────
-    - name: Find latest update log
+    # ── 2. Premier fichier du jour (start) / Dernier fichier du jour (end + contenu) ──
+    - name: Find first log file of the day (oldest)
+      shell: "ls -tr {{ dynatrace_update_dir }}/{{ today_date }}*.log 2>/dev/null | head -1"
+      register: first_file
+      changed_when: false
+      failed_when: false
+
+    - name: Find latest log file of the day (newest)
       shell: "ls -t {{ dynatrace_update_dir }}/{{ today_date }}*.log 2>/dev/null | head -1"
       register: latest_file
       changed_when: false
       failed_when: false
 
-    # ── 3. Contenu / timestamps ────────────────────────────────
-    - name: Get last 2 lines of log
+    # ── 3. Contenu du dernier fichier ──────────────────────────
+    - name: Get last 2 lines of latest log
       shell: "tail -2 {{ latest_file.stdout }}"
       register: last_lines
-      when: latest_file.stdout != ""
+      when: latest_file.stdout | default('') != ''
       changed_when: false
 
-    - name: Get log file timestamps (ctime / mtime)
-      shell: "stat -c '%Z %Y' {{ latest_file.stdout }}"
-      register: stat_output
-      when: latest_file.stdout != ""
+    # ── 4. Timestamps : ctime du premier / mtime du dernier ────
+    - name: Get start epoch (ctime of first file)
+      shell: "stat -c '%Z' {{ first_file.stdout }}"
+      register: stat_start
+      when: first_file.stdout | default('') != ''
       changed_when: false
-    
-    # ── 4. Valeurs sûres (guard skipped tasks) ─────────────────
+
+    - name: Get end epoch (mtime of latest file)
+      shell: "stat -c '%Y' {{ latest_file.stdout }}"
+      register: stat_end
+      when: latest_file.stdout | default('') != ''
+      changed_when: false
+
+    # ── 5. Valeurs sûres (guard skipped tasks) ─────────────────
     - name: Set safe raw values
       set_fact:
         _log_found:  "{{ latest_file.stdout | default('') != '' }}"
-        _last_lines: "{{ last_lines.stdout  | default('') if (last_lines  is not skipped and last_lines  is defined) else '' }}"
-        _stat_out:   "{{ stat_output.stdout | default('') if (stat_output is not skipped and stat_output is defined) else '' }}"
+        _last_lines: "{{ last_lines.stdout | default('') if (last_lines is not skipped and last_lines is defined) else '' }}"
+        _start_ep:   "{{ stat_start.stdout | default('0') | trim if (stat_start is not skipped and stat_start is defined) else '0' }}"
+        _end_ep:     "{{ stat_end.stdout   | default('0') | trim if (stat_end   is not skipped and stat_end   is defined) else '0' }}"
 
-    # ── 5. Calcul step / percent / status par nœud ─────────────
+    # ── 6. Calcul step / percent ───────────────────────────────
     - name: Compute node facts
       set_fact:
-        node_start_epoch: "{{ (_stat_out.split()[0] if _stat_out != '' else '0') | int }}"
-        node_end_epoch:   "{{ (_stat_out.split()[1] if _stat_out != '' else '0') | int }}"
+        node_start_epoch: "{{ _start_ep | int }}"
+        node_end_epoch:   "{{ _end_ep   | int }}"
         node_step: >-
           {%- if not _log_found | bool -%}0/3
           {%- elif 'system-check' in (latest_file.stdout | default('')) -%}1/3
@@ -57,14 +71,7 @@
           {%- elif 'SUCCESS' in _last_lines -%}100
           {%- else -%}{{ _last_lines.split('\n') | last | regex_search('[0-9]+') | default('0') }}{%- endif -%}
 
-    - name: Derive node_status
-      set_fact:
-        node_status: >-
-          {%- if node_percent | int == 100 and node_step | trim == '3/3' -%}DONE
-          {%- elif node_percent | int > 0 -%}IN_PROGRESS
-          {%- else -%}PENDING{%- endif -%}
-
-    # ── 6. Status + durée par nœud ─────────────────────────────
+    # ── 7. Status + durée par nœud ─────────────────────────────
     - name: Derive node_status and node_duration
       set_fact:
         node_status: >-
@@ -72,14 +79,14 @@
           {%- elif node_percent | int > 0 -%}IN_PROGRESS
           {%- else -%}PENDING{%- endif -%}
         node_duration_min: >-
-          {%- set start = node_start_epoch | int -%}
-          {%- set end   = node_end_epoch   | int -%}
+          {%- set start = _start_ep | int -%}
+          {%- set end   = _end_ep   | int -%}
           {%- set now   = ansible_date_time.epoch | int -%}
           {%- if start == 0 -%}N/A
           {%- elif node_percent | int == 100 and node_step | trim == '3/3' -%}{{ ((end - start) / 60) | round(1) }}
           {%- else -%}{{ ((now - start) / 60) | round(1) }}{%- endif -%}
 
-    # ── 7. Affichage par nœud ──────────────────────────────────
+    # ── 8. Affichage par nœud ──────────────────────────────────
     - name: Show node status
       debug:
         msg:
@@ -89,7 +96,7 @@
           - "Status   : {{ node_status | trim }}"
           - "{{ 'Duree        : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
 
-    # ── 8. Résumé cluster (run_once) ───────────────────────────
+    # ── 9. Résumé cluster (run_once) ───────────────────────────
     - name: Display cluster summary
       run_once: true
       vars:
@@ -102,19 +109,20 @@
         n_progress:   "{{ all_statuses | select('equalto', 'IN_PROGRESS') | list | length | int }}"
         n_pending:    "{{ all_statuses | select('equalto', 'PENDING')     | list | length | int }}"
         g_pct:        "{{ (all_percents | sum / (ansible_play_hosts | length)) | round(1) }}"
-        g_start:      "{{ all_starts | min if all_starts | length > 0 else 0 }}"
-        g_end:        "{{ all_ends   | max if all_ends   | length > 0 else 0 }}"
-        g_dur_min:    "{{ ((all_ends | max | int - all_starts | min | int) / 60) | round(1) if all_starts | length > 0 and all_ends | length > 0 else 'N/A' }}"
+        g_start_ep:   "{{ all_starts | min | int if all_starts | length > 0 else 0 }}"
+        g_end_ep:     "{{ all_ends   | max | int if all_ends   | length > 0 else 0 }}"
+        g_now:        "{{ ansible_date_time.epoch | int }}"
         g_status:     "{{ 'COMPLETED' if (all_statuses | select('equalto', 'DONE') | list | length | int) == (ansible_play_hosts | length | int) and (ansible_play_hosts | length | int) > 0 else 'IN_PROGRESS' }}"
+        g_ref_end:    "{{ g_end_ep if g_status == 'COMPLETED' else g_now }}"
       debug:
         msg:
-          - "═══════════════════════════════════════"
-          - "         CLUSTER UPGRADE SUMMARY       "
-          - "═══════════════════════════════════════"
+          - "================================================="
+          - "          CLUSTER UPGRADE SUMMARY               "
+          - "================================================="
           - "Status   : {{ g_status }}"
           - "Nodes    : {{ n_total }}  (DONE={{ n_done }} | IN_PROGRESS={{ n_progress }} | PENDING={{ n_pending }})"
           - "Progress : {{ g_pct }}%"
-          - "Start    : {{ g_start | int | strftime('%Y-%m-%d %H:%M:%S') if g_start | int > 0 else 'N/A' }}"
-          - "End      : {{ g_end   | int | strftime('%Y-%m-%d %H:%M:%S') if g_end   | int > 0 else 'N/A' }}"
-          - "Duration : {{ g_dur_min }} min"
-          - "═══════════════════════════════════════"
+          - "Start    : {{ '%Y-%m-%d %H:%M:%S' | strftime(g_start_ep | int) if g_start_ep | int > 0 else 'N/A' }}"
+          - "End      : {{ '%Y-%m-%d %H:%M:%S' | strftime(g_end_ep   | int) if g_status == 'COMPLETED' and g_end_ep | int > 0 else 'N/A' }}"
+          - "Duration : {{ (((g_ref_end | int) - (g_start_ep | int)) / 60) | round(1) if g_start_ep | int > 0 else 'N/A' }} min"
+          - "================================================="
