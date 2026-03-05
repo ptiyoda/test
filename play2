@@ -21,23 +21,28 @@
       changed_when: false
       failed_when: false
 
-    # ── 3. Fichier success-upgrade-of-dynatrace ────────────────
+    # ── 3. Fichier success-upgrade-of-dynatrace (durée node) ───
     - name: Find upgrade log file (success-upgrade-of-dynatrace)
       shell: "ls -t {{ dynatrace_update_dir }}/{{ today_date }}*success-upgrade-of-dynatrace*.log 2>/dev/null | head -1"
       register: upgrade_file
       changed_when: false
       failed_when: false
 
-    # ── 4. Contenu du dernier fichier du jour ──────────────────
+    # ── 4. Fichier le plus ancien du jour (cluster start) ──────
+    - name: Find oldest log file of the day (cluster start)
+      shell: "ls -tr {{ dynatrace_update_dir }}/{{ today_date }}*.log 2>/dev/null | head -1"
+      register: oldest_file
+      changed_when: false
+      failed_when: false
+
+    # ── 5. Contenu du dernier fichier du jour ──────────────────
     - name: Get last 2 lines of latest log
       shell: "tail -2 {{ latest_file.stdout }}"
       register: last_lines
       when: latest_file.stdout | default('') != ''
       changed_when: false
 
-    # ── 5. Extraire timestamp ligne avancement=0 (start node) ──
-    # Format : 2026-03-05 08:00:12 UTC 0 ...
-    # On cherche le champ 4 == 0 strictement
+    # ── 6. Timestamps node : lignes avancement=0 et =100 ───────
     - name: Get start timestamp from upgrade file (avancement=0)
       shell: >
         awk '$4 == 0 {print $1, $2, $3; exit}' {{ upgrade_file.stdout }}
@@ -46,7 +51,6 @@
       changed_when: false
       failed_when: false
 
-    # ── 6. Extraire timestamp ligne avancement=100 (end node) ──
     - name: Get end timestamp from upgrade file (avancement=100)
       shell: >
         awk '$4 == 100 {print $1, $2, $3; exit}' {{ upgrade_file.stdout }}
@@ -55,8 +59,23 @@
       changed_when: false
       failed_when: false
 
-    # ── 7. Convertir timestamps en epoch ───────────────────────
-    - name: Convert start timestamp to epoch
+    # ── 7. Timestamps cluster : ctime oldest / mtime newest ────
+    - name: Get ctime of oldest file (cluster start)
+      shell: "stat -c '%Z' {{ oldest_file.stdout }}"
+      register: stat_oldest
+      when: oldest_file.stdout | default('') != ''
+      changed_when: false
+      failed_when: false
+
+    - name: Get mtime of latest file (cluster end)
+      shell: "stat -c '%Y' {{ latest_file.stdout }}"
+      register: stat_latest
+      when: latest_file.stdout | default('') != ''
+      changed_when: false
+      failed_when: false
+
+    # ── 8. Convertir timestamps node en epoch ──────────────────
+    - name: Convert node start timestamp to epoch
       shell: "date -d '{{ raw_start_ts.stdout | trim }}' +%s"
       register: epoch_start
       when:
@@ -66,7 +85,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Convert end timestamp to epoch
+    - name: Convert node end timestamp to epoch
       shell: "date -d '{{ raw_end_ts.stdout | trim }}' +%s"
       register: epoch_end
       when:
@@ -76,20 +95,26 @@
       changed_when: false
       failed_when: false
 
-    # ── 8. Valeurs sûres (guard skipped tasks) ─────────────────
+    # ── 9. Valeurs sûres (guard skipped tasks) ─────────────────
     - name: Set safe raw values
       set_fact:
         _log_found:     "{{ latest_file.stdout  | default('') != '' }}"
         _upgrade_found: "{{ upgrade_file.stdout | default('') != '' }}"
-        _last_lines:    "{{ last_lines.stdout   | default('') if (last_lines  is not skipped and last_lines  is defined) else '' }}"
-        _start_ep:      "{{ epoch_start.stdout  | default('0') | trim if (epoch_start is not skipped and epoch_start is defined) else '0' }}"
-        _end_ep:        "{{ epoch_end.stdout    | default('0') | trim if (epoch_end   is not skipped and epoch_end   is defined) else '0' }}"
+        _last_lines:    "{{ last_lines.stdout  | default('') if (last_lines  is not skipped and last_lines  is defined) else '' }}"
+        # node timing (lignes avancement=0/100)
+        _node_start_ep: "{{ epoch_start.stdout  | default('0') | trim if (epoch_start is not skipped and epoch_start is defined) else '0' }}"
+        _node_end_ep:   "{{ epoch_end.stdout    | default('0') | trim if (epoch_end   is not skipped and epoch_end   is defined) else '0' }}"
+        # cluster timing (ctime oldest / mtime newest)
+        _cluster_start_ep: "{{ stat_oldest.stdout | default('0') | trim if (stat_oldest is not skipped and stat_oldest is defined) else '0' }}"
+        _cluster_end_ep:   "{{ stat_latest.stdout | default('0') | trim if (stat_latest is not skipped and stat_latest is defined) else '0' }}"
 
-    # ── 9. Calcul step / percent / epochs ──────────────────────
+    # ── 10. Calcul step / percent / epochs ─────────────────────
     - name: Compute node facts
       set_fact:
-        node_start_epoch: "{{ _start_ep | int }}"
-        node_end_epoch:   "{{ _end_ep   | int }}"
+        node_start_epoch:   "{{ _node_start_ep    | int }}"
+        node_end_epoch:     "{{ _node_end_ep      | int }}"
+        cluster_start_epoch: "{{ _cluster_start_ep | int }}"
+        cluster_end_epoch:   "{{ _cluster_end_ep   | int }}"
         node_step: >-
           {%- set fname = latest_file.stdout | default('') | basename -%}
           {%- if not _log_found | bool -%}0/3
@@ -102,7 +127,7 @@
           {%- elif 'SUCCESS' in _last_lines -%}100
           {%- else -%}{{ _last_lines.split('\n') | last | regex_search('[0-9]+') | default('0') }}{%- endif -%}
 
-    # ── 10. Status + durée par nœud ────────────────────────────
+    # ── 11. Status + durée par nœud ────────────────────────────
     - name: Derive node_status and node_duration
       set_fact:
         node_status: >-
@@ -110,14 +135,14 @@
           {%- elif node_percent | int > 0 -%}IN_PROGRESS
           {%- else -%}PENDING{%- endif -%}
         node_duration_min: >-
-          {%- set start = _start_ep | int -%}
-          {%- set end   = _end_ep   | int -%}
+          {%- set start = _node_start_ep | int -%}
+          {%- set end   = _node_end_ep   | int -%}
           {%- set now   = ansible_date_time.epoch | int -%}
           {%- if start == 0 -%}N/A
           {%- elif end > 0 -%}{{ ((end - start) / 60) | round(1) }}
           {%- else -%}{{ ((now - start) / 60) | round(1) }}{%- endif -%}
 
-    # ── 11. Affichage par nœud ─────────────────────────────────
+    # ── 12. Affichage par nœud ─────────────────────────────────
     - name: Show node status
       debug:
         msg:
@@ -127,26 +152,26 @@
           - "Status   : {{ node_status | trim }}"
           - "{{ 'Duree        : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
 
-    # ── 12. Résumé cluster (run_once) ──────────────────────────
-    # g_start = min des start epoch  sur tous les nodes (ligne avancement=0)
-    # g_end   = max des end epoch    sur tous les nodes (ligne avancement=100)
+    # ── 13. Résumé cluster (run_once) ──────────────────────────
+    # g_start = min des ctime  du fichier le plus ancien du jour  (toutes étapes)
+    # g_end   = max des mtime  du fichier le plus récent du jour  (toutes étapes)
     - name: Display cluster summary
       run_once: true
       vars:
-        all_statuses: "{{ ansible_play_hosts | map('extract', hostvars, 'node_status')      | map('default', 'PENDING') | map('trim') | list }}"
-        all_percents: "{{ ansible_play_hosts | map('extract', hostvars, 'node_percent')     | map('default', 0) | map('int') | list }}"
-        all_starts:   "{{ ansible_play_hosts | map('extract', hostvars, 'node_start_epoch') | map('default', 0) | map('int') | reject('equalto', 0) | list }}"
-        all_ends:     "{{ ansible_play_hosts | map('extract', hostvars, 'node_end_epoch')   | map('default', 0) | map('int') | reject('equalto', 0) | list }}"
-        n_total:      "{{ ansible_play_hosts | length | int }}"
-        n_done:       "{{ all_statuses | select('equalto', 'DONE')        | list | length | int }}"
-        n_progress:   "{{ all_statuses | select('equalto', 'IN_PROGRESS') | list | length | int }}"
-        n_pending:    "{{ all_statuses | select('equalto', 'PENDING')     | list | length | int }}"
-        g_pct:        "{{ (all_percents | sum / (ansible_play_hosts | length)) | round(1) }}"
-        g_start_ep:   "{{ all_starts | min | int if all_starts | length > 0 else 0 }}"
-        g_end_ep:     "{{ all_ends   | max | int if all_ends   | length > 0 else 0 }}"
-        g_now:        "{{ ansible_date_time.epoch | int }}"
-        g_status:     "{{ 'COMPLETED' if (all_statuses | select('equalto', 'DONE') | list | length | int) == (ansible_play_hosts | length | int) and (ansible_play_hosts | length | int) > 0 else 'IN_PROGRESS' }}"
-        g_ref_end:    "{{ g_end_ep if g_status == 'COMPLETED' else g_now }}"
+        all_statuses:      "{{ ansible_play_hosts | map('extract', hostvars, 'node_status')        | map('default', 'PENDING') | map('trim') | list }}"
+        all_percents:      "{{ ansible_play_hosts | map('extract', hostvars, 'node_percent')       | map('default', 0) | map('int') | list }}"
+        all_c_starts:      "{{ ansible_play_hosts | map('extract', hostvars, 'cluster_start_epoch') | map('default', 0) | map('int') | reject('equalto', 0) | list }}"
+        all_c_ends:        "{{ ansible_play_hosts | map('extract', hostvars, 'cluster_end_epoch')   | map('default', 0) | map('int') | reject('equalto', 0) | list }}"
+        n_total:           "{{ ansible_play_hosts | length | int }}"
+        n_done:            "{{ all_statuses | select('equalto', 'DONE')        | list | length | int }}"
+        n_progress:        "{{ all_statuses | select('equalto', 'IN_PROGRESS') | list | length | int }}"
+        n_pending:         "{{ all_statuses | select('equalto', 'PENDING')     | list | length | int }}"
+        g_pct:             "{{ (all_percents | sum / (ansible_play_hosts | length)) | round(1) }}"
+        g_start_ep:        "{{ all_c_starts | min | int if all_c_starts | length > 0 else 0 }}"
+        g_end_ep:          "{{ all_c_ends   | max | int if all_c_ends   | length > 0 else 0 }}"
+        g_now:             "{{ ansible_date_time.epoch | int }}"
+        g_status:          "{{ 'COMPLETED' if (all_statuses | select('equalto', 'DONE') | list | length | int) == (ansible_play_hosts | length | int) and (ansible_play_hosts | length | int) > 0 else 'IN_PROGRESS' }}"
+        g_ref_end:         "{{ g_end_ep if g_status == 'COMPLETED' else g_now }}"
       debug:
         msg:
           - "================================================="
