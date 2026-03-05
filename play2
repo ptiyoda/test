@@ -14,64 +14,79 @@
       set_fact:
         today_date: "{{ upgrade_date | default(ansible_date_time.date | replace('-', '')) }}"
 
-    # ── 2. Premier fichier du jour (start) / Dernier fichier du jour (end + contenu) ──
-    - name: Find first log file of the day (oldest)
-      shell: "ls -tr {{ dynatrace_update_dir }}/{{ today_date }}*.log 2>/dev/null | head -1"
-      register: first_file
-      changed_when: false
-      failed_when: false
-
-    - name: Find latest log file of the day (newest)
+    # ── 2. Dernier fichier du jour (pour step/percent) ─────────
+    - name: Find latest log file of the day
       shell: "ls -t {{ dynatrace_update_dir }}/{{ today_date }}*.log 2>/dev/null | head -1"
       register: latest_file
       changed_when: false
       failed_when: false
 
-    # ── 3. Contenu du dernier fichier ──────────────────────────
+    # ── 3. Fichier success-upgrade-of-dynatrace ────────────────
+    #   newest : pour node duration (mtime = fin du node)
+    #   oldest : pour cluster start (ctime = début le plus ancien)
+    - name: Find newest upgrade file (mtime - node end / cluster end)
+      shell: "ls -t  {{ dynatrace_update_dir }}/{{ today_date }}*success-upgrade-of-dynatrace*.log 2>/dev/null | head -1"
+      register: upgrade_newest
+      changed_when: false
+      failed_when: false
+
+    - name: Find oldest upgrade file (ctime - node start / cluster start)
+      shell: "ls -tr {{ dynatrace_update_dir }}/{{ today_date }}*success-upgrade-of-dynatrace*.log 2>/dev/null | head -1"
+      register: upgrade_oldest
+      changed_when: false
+      failed_when: false
+
+    # ── 4. Contenu du dernier fichier du jour ──────────────────
     - name: Get last 2 lines of latest log
       shell: "tail -2 {{ latest_file.stdout }}"
       register: last_lines
       when: latest_file.stdout | default('') != ''
       changed_when: false
 
-    # ── 4. Timestamps : ctime du premier / mtime du dernier ────
-    - name: Get start epoch (ctime of first file)
-      shell: "stat -c '%Z' {{ first_file.stdout }}"
-      register: stat_start
-      when: first_file.stdout | default('') != ''
+    # ── 5. Timestamps ──────────────────────────────────────────
+    #   ctime du fichier le plus ancien = début node
+    #   mtime du fichier le plus récent = fin node
+    - name: Get ctime of oldest upgrade file (node/cluster start)
+      shell: "stat -c '%Z' {{ upgrade_oldest.stdout }}"
+      register: stat_ctime
+      when: upgrade_oldest.stdout | default('') != ''
       changed_when: false
 
-    - name: Get end epoch (mtime of latest file)
-      shell: "stat -c '%Y' {{ latest_file.stdout }}"
-      register: stat_end
-      when: latest_file.stdout | default('') != ''
+    - name: Get mtime of newest upgrade file (node/cluster end)
+      shell: "stat -c '%Y' {{ upgrade_newest.stdout }}"
+      register: stat_mtime
+      when: upgrade_newest.stdout | default('') != ''
       changed_when: false
 
-    # ── 5. Valeurs sûres (guard skipped tasks) ─────────────────
+    # ── 6. Valeurs sûres (guard skipped tasks) ─────────────────
     - name: Set safe raw values
       set_fact:
-        _log_found:  "{{ latest_file.stdout | default('') != '' }}"
-        _last_lines: "{{ last_lines.stdout | default('') if (last_lines is not skipped and last_lines is defined) else '' }}"
-        _start_ep:   "{{ stat_start.stdout | default('0') | trim if (stat_start is not skipped and stat_start is defined) else '0' }}"
-        _end_ep:     "{{ stat_end.stdout   | default('0') | trim if (stat_end   is not skipped and stat_end   is defined) else '0' }}"
+        _log_found:     "{{ latest_file.stdout    | default('') != '' }}"
+        _upgrade_found: "{{ upgrade_newest.stdout | default('') != '' }}"
+        _last_lines:    "{{ last_lines.stdout  | default('') if (last_lines  is not skipped and last_lines  is defined) else '' }}"
+        _ctime_raw:     "{{ stat_ctime.stdout  | default('0') | trim if (stat_ctime is not skipped and stat_ctime is defined) else '0' }}"
+        _mtime_raw:     "{{ stat_mtime.stdout  | default('0') | trim if (stat_mtime is not skipped and stat_mtime is defined) else '0' }}"
 
-    # ── 6. Calcul step / percent ───────────────────────────────
+    # ── 7. Calcul step / percent / epochs ──────────────────────
     - name: Compute node facts
       set_fact:
-        node_start_epoch: "{{ _start_ep | int }}"
-        node_end_epoch:   "{{ _end_ep   | int }}"
+        # ctime oldest = début upgrade node
+        node_start_epoch: "{{ _ctime_raw | int }}"
+        # mtime newest = fin upgrade node
+        node_end_epoch:   "{{ _mtime_raw | int }}"
         node_step: >-
+          {%- set fname = latest_file.stdout | default('') | basename -%}
           {%- if not _log_found | bool -%}0/3
-          {%- elif 'system-check' in (latest_file.stdout | default('')) -%}1/3
-          {%- elif 'nodekeeper'   in (latest_file.stdout | default('')) -%}2/3
-          {%- elif 'managed'      in (latest_file.stdout | default('')) -%}3/3
+          {%- elif 'success-system-check-of-dynatrace-managed' in fname -%}1/3
+          {%- elif 'success-upgrade-nodekeeper'                in fname -%}2/3
+          {%- elif 'success-upgrade-of-dynatrace'             in fname -%}3/3
           {%- else -%}?/3{%- endif -%}
         node_percent: >-
           {%- if not _log_found | bool -%}0
           {%- elif 'SUCCESS' in _last_lines -%}100
           {%- else -%}{{ _last_lines.split('\n') | last | regex_search('[0-9]+') | default('0') }}{%- endif -%}
 
-    # ── 7. Status + durée par nœud ─────────────────────────────
+    # ── 8. Status + durée par nœud ─────────────────────────────
     - name: Derive node_status and node_duration
       set_fact:
         node_status: >-
@@ -79,14 +94,14 @@
           {%- elif node_percent | int > 0 -%}IN_PROGRESS
           {%- else -%}PENDING{%- endif -%}
         node_duration_min: >-
-          {%- set start = _start_ep | int -%}
-          {%- set end   = _end_ep   | int -%}
+          {%- set start = _ctime_raw | int -%}
+          {%- set end   = _mtime_raw | int -%}
           {%- set now   = ansible_date_time.epoch | int -%}
           {%- if start == 0 -%}N/A
           {%- elif node_percent | int == 100 and node_step | trim == '3/3' -%}{{ ((end - start) / 60) | round(1) }}
           {%- else -%}{{ ((now - start) / 60) | round(1) }}{%- endif -%}
 
-    # ── 8. Affichage par nœud ──────────────────────────────────
+    # ── 9. Affichage par nœud ──────────────────────────────────
     - name: Show node status
       debug:
         msg:
@@ -96,7 +111,9 @@
           - "Status   : {{ node_status | trim }}"
           - "{{ 'Duree        : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
 
-    # ── 9. Résumé cluster (run_once) ───────────────────────────
+    # ── 10. Résumé cluster (run_once) ──────────────────────────
+    # g_start = min des ctime  (node_start_epoch) sur tous les nodes
+    # g_end   = max des mtime  (node_end_epoch)   sur tous les nodes
     - name: Display cluster summary
       run_once: true
       vars:
