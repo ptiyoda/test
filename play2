@@ -42,6 +42,14 @@
       when: latest_file.stdout | default('') != ''
       changed_when: false
 
+    # ── 5b. 3 dernières lignes du fichier upgrade (verbosité node) ──
+    - name: Get last 3 lines of upgrade file
+      shell: "tail -3 {{ upgrade_file.stdout }}"
+      register: upgrade_last3
+      when: upgrade_file.stdout | default('') != ''
+      changed_when: false
+      failed_when: false
+
     # ── 6. Timestamps node : lignes avancement=0 et =100 ───────
     - name: Get start timestamp from upgrade file (avancement=0)
       shell: >
@@ -107,6 +115,7 @@
         # cluster timing (ctime oldest / mtime newest)
         _cluster_start_ep: "{{ stat_oldest.stdout | default('0') | trim if (stat_oldest is not skipped and stat_oldest is defined) else '0' }}"
         _cluster_end_ep:   "{{ stat_latest.stdout | default('0') | trim if (stat_latest is not skipped and stat_latest is defined) else '0' }}"
+        _upgrade_last3:    "{{ upgrade_last3.stdout | default('') if (upgrade_last3 is not skipped and upgrade_last3 is defined) else '' }}"
 
     # ── 10. Calcul step / percent / epochs ─────────────────────
     - name: Compute node facts
@@ -150,7 +159,7 @@
             {%- set total = ((end if end > 0 else now) - start) | int -%}
             {%- set m = (total // 60) | int -%}
             {%- set s = (total % 60)  | int -%}
-            {{ m }}m {{ s }}s
+{{- m }}m {{ s }}s
           {%- endif -%}
 
     # ── 12. Affichage par nœud ─────────────────────────────────
@@ -162,6 +171,8 @@
           - "Percent  : {{ node_percent | int }}%"
           - "Status   : {{ node_status | trim }}"
           - "{{ 'Duree        : ' + (node_duration_fmt | trim) if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_fmt | trim) if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
+          - "{{ '--- Dernières lignes upgrade ---' if node_status | trim == 'DONE' else '' }}"
+          - "{{ _upgrade_last3 | default('') if node_status | trim == 'DONE' else '' }}"
 
     # ── 13. Résumé cluster (run_once) ──────────────────────────
     # g_start = min des ctime  du fichier le plus ancien du jour  (toutes étapes)
