@@ -134,13 +134,24 @@
           {%- if node_percent | int == 100 and node_step | trim == '3/3' -%}DONE
           {%- elif node_percent | int > 0 -%}IN_PROGRESS
           {%- else -%}PENDING{%- endif -%}
-        node_duration_min: >-
+        node_duration_sec: >-
+          {%- set start = _node_start_ep | int -%}
+          {%- set end   = _node_end_ep   | int -%}
+          {%- set now   = ansible_date_time.epoch | int -%}
+          {%- if start == 0 -%}0
+          {%- elif end > 0 -%}{{ (end - start) | int }}
+          {%- else -%}{{ (now - start) | int }}{%- endif -%}
+        node_duration_fmt: >-
           {%- set start = _node_start_ep | int -%}
           {%- set end   = _node_end_ep   | int -%}
           {%- set now   = ansible_date_time.epoch | int -%}
           {%- if start == 0 -%}N/A
-          {%- elif end > 0 -%}{{ ((end - start) / 60) | round(1) }}
-          {%- else -%}{{ ((now - start) / 60) | round(1) }}{%- endif -%}
+          {%- else -%}
+            {%- set total = ((end if end > 0 else now) - start) | int -%}
+            {%- set m = (total // 60) | int -%}
+            {%- set s = (total % 60)  | int -%}
+            {{ m }}m {{ s }}s
+          {%- endif -%}
 
     # ── 12. Affichage par nœud ─────────────────────────────────
     - name: Show node status
@@ -150,7 +161,7 @@
           - "Step     : {{ node_step | trim }}"
           - "Percent  : {{ node_percent | int }}%"
           - "Status   : {{ node_status | trim }}"
-          - "{{ 'Duree        : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_min | trim) + ' min' if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
+          - "{{ 'Duree        : ' + (node_duration_fmt | trim) if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_fmt | trim) if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
 
     # ── 13. Résumé cluster (run_once) ──────────────────────────
     # g_start = min des ctime  du fichier le plus ancien du jour  (toutes étapes)
