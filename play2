@@ -193,5 +193,14 @@
           - "Progress : {{ g_pct }}%"
           - "Start    : {{ '%Y-%m-%d %H:%M:%S' | strftime(g_start_ep | int) if g_start_ep | int > 0 else 'N/A' }}"
           - "End      : {{ '%Y-%m-%d %H:%M:%S' | strftime(g_end_ep   | int) if g_status == 'COMPLETED' and g_end_ep | int > 0 else 'N/A' }}"
-          - "Duration : {{ (((g_ref_end | int) - (g_start_ep | int)) / 60) | round(1) if g_start_ep | int > 0 else 'N/A' }} min"
+          - >-
+            {%- if g_start_ep | int > 0 -%}
+              {%- set total = (g_ref_end | int) - (g_start_ep | int) -%}
+              {%- set h = (total // 3600) | int -%}
+              {%- set m = ((total % 3600) // 60) | int -%}
+              {%- set s = (total % 60) | int -%}
+              Duration : {{ h }}h {{ m }}m {{ s }}s
+            {%- else -%}
+              Duration : N/A
+            {%- endif -%}
           - "================================================="
