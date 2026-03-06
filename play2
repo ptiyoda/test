@@ -159,7 +159,8 @@
             {%- set total = ((end if end > 0 else now) - start) | int -%}
             {%- set m = (total // 60) | int -%}
             {%- set s = (total % 60)  | int -%}
-{{- m }}m {{ s }}s
+            {%- set ms = m ~ 'm ' ~ s ~ 's' -%}
+            {{ ms | trim }}
           {%- endif -%}
 
     # ── 12. Affichage par nœud ─────────────────────────────────
