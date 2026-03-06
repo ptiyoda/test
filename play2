@@ -173,9 +173,9 @@
           - "Status   : {{ node_status | trim }}"
           - "{{ 'Duree        : ' + (node_duration_fmt | trim) if node_status | trim == 'DONE' else 'En cours dep : ' + (node_duration_fmt | trim) if node_status | trim == 'IN_PROGRESS' else 'Duree        : N/A' }}"
           - "{{ '--- Dernières lignes upgrade ---' if node_status | trim == 'DONE' else '' }}"
-          - "{{ _upgrade_last3.split('\n')[0] | default('') if node_status | trim == 'DONE' else '' }}"
-          - "{{ _upgrade_last3.split('\n')[1] | default('') if node_status | trim == 'DONE' else '' }}"
-          - "{{ _upgrade_last3.split('\n')[2] | default('') if node_status | trim == 'DONE' else '' }}"
+          - "{{ _upgrade_last3.split('\n')[0] | default('') | replace('\t', ' ') | trim if node_status | trim == 'DONE' else '' }}"
+          - "{{ _upgrade_last3.split('\n')[1] | default('') | replace('\t', ' ') | trim if node_status | trim == 'DONE' else '' }}"
+          - "{{ _upgrade_last3.split('\n')[2] | default('') | replace('\t', ' ') | trim if node_status | trim == 'DONE' else '' }}"
 
     # ── 13. Résumé cluster (run_once) ──────────────────────────
     # g_start = min des ctime  du fichier le plus ancien du jour  (toutes étapes)
