@@ -1,0 +1,263 @@
+"""
+Dynatrace Extensions Audit
+--------------------------
+Affiche pour chaque environnement :
+  - Les extensions déployées
+  - Leurs configurations actives (enabled / disabled)
+  - Les feature sets activés vs disponibles
+  - Les métriques effectivement ingérées
+
+Usage :
+    pip install requests tabulate
+    python dynatrace_extensions_audit.py
+"""
+
+import requests
+import json
+from tabulate import tabulate
+from dataclasses import dataclass, field
+from typing import Optional
+
+# ─────────────────────────────────────────────
+#  CONFIGURATION  — à adapter
+# ─────────────────────────────────────────────
+MANAGED_URL   = "https://your-managed-domain.com"   # ex: https://dynatrace.mycompany.com
+ENVIRONMENT_ID = "your-env-id"                       # ex: abc12345
+API_TOKEN      = "dt0c01.XXXXXXXX.YYYYYYYY"          # scopes requis : extensions.read, metrics.read
+
+# Filtre optionnel : laisser None pour tout récupérer
+EXTENSION_NAME_FILTER: Optional[str] = None          # ex: "com.dynatrace.extension.sql-server"
+# ─────────────────────────────────────────────
+
+
+BASE_URL = f"{MANAGED_URL}/e/{ENVIRONMENT_ID}/api"
+
+HEADERS = {
+    "Authorization": f"Api-Token {API_TOKEN}",
+    "Content-Type": "application/json",
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  HELPERS HTTP
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get(endpoint: str, params: dict = None) -> dict:
+    url = f"{BASE_URL}{endpoint}"
+    resp = requests.get(url, headers=HEADERS, params=params or {}, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def paginate(endpoint: str, list_key: str, params: dict = None) -> list:
+    """Gère automatiquement la pagination Dynatrace (nextPageKey)."""
+    results = []
+    next_key = None
+    while True:
+        p = dict(params or {})
+        if next_key:
+            p["nextPageKey"] = next_key
+        data = get(endpoint, p)
+        results.extend(data.get(list_key, []))
+        next_key = data.get("nextPageKey")
+        if not next_key:
+            break
+    return results
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  RÉCUPÉRATION DES DONNÉES
+# ──────────────────────────────────────────────────────────────────────────────
+
+def fetch_extensions() -> list[dict]:
+    """Liste toutes les extensions déployées (V2)."""
+    params = {}
+    if EXTENSION_NAME_FILTER:
+        params["extensionName"] = EXTENSION_NAME_FILTER
+    return paginate("/v2/extensions", "extensions", params)
+
+
+def fetch_monitoring_configs(ext_name: str) -> list[dict]:
+    """Configurations actives pour une extension donnée."""
+    return paginate(
+        f"/v2/extensions/{ext_name}/monitoringConfigurations",
+        "items"
+    )
+
+
+def fetch_schema(ext_name: str, version: str) -> dict:
+    """Schéma d'une extension : feature sets & métriques disponibles."""
+    try:
+        return get(f"/v2/extensions/{ext_name}/{version}/schema")
+    except requests.HTTPError:
+        return {}
+
+
+def fetch_ingested_metrics(ext_name: str) -> list[str]:
+    """Métriques effectivement ingérées pour cette extension."""
+    # On cherche les métriques dont la clé commence par ext:<nom_court>
+    short = ext_name.split(".")[-1]  # ex: sql-server
+    try:
+        data = get("/v2/metrics", {
+            "text": f"ext:{short}",
+            "fields": "metricId",
+            "pageSize": 500,
+        })
+        return [m["metricId"] for m in data.get("metrics", [])]
+    except requests.HTTPError:
+        return []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  AUDIT PRINCIPAL
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ExtensionAudit:
+    name: str
+    version: str
+    ext_type: str
+    configs: list[dict] = field(default_factory=list)
+    available_feature_sets: list[str] = field(default_factory=list)
+    ingested_metrics: list[str] = field(default_factory=list)
+
+
+def audit_extension(ext: dict) -> ExtensionAudit:
+    name    = ext["extensionName"]
+    version = ext.get("version", "?")
+    ext_type = ext.get("extensionType", "?")
+
+    print(f"  → {name} v{version}")
+
+    configs  = fetch_monitoring_configs(name)
+    schema   = fetch_schema(name, version)
+    metrics  = fetch_ingested_metrics(name)
+
+    available_fs = [
+        fs.get("featureSet", "?")
+        for fs in schema.get("featureSets", [])
+    ]
+
+    return ExtensionAudit(
+        name=name,
+        version=version,
+        ext_type=ext_type,
+        configs=configs,
+        available_feature_sets=available_fs,
+        ingested_metrics=metrics,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  AFFICHAGE
+# ──────────────────────────────────────────────────────────────────────────────
+
+def display_summary(audits: list[ExtensionAudit]):
+    print("\n" + "═" * 80)
+    print("  RÉSUMÉ DES EXTENSIONS")
+    print("═" * 80)
+
+    rows = []
+    for a in audits:
+        enabled_count  = sum(1 for c in a.configs if c.get("value", {}).get("enabled"))
+        disabled_count = len(a.configs) - enabled_count
+
+        for cfg in a.configs:
+            val = cfg.get("value", {})
+            active_fs  = val.get("featureSets", [])
+            missing_fs = [f for f in a.available_feature_sets if f not in active_fs]
+
+            rows.append([
+                a.name,
+                a.version,
+                a.ext_type,
+                cfg.get("objectId", "?")[:8] + "…",
+                cfg.get("scope", "?"),
+                "✅ ON" if val.get("enabled") else "❌ OFF",
+                ", ".join(active_fs) or "—",
+                ", ".join(missing_fs) or "—",
+                len(a.ingested_metrics),
+            ])
+
+        if not a.configs:
+            rows.append([
+                a.name, a.version, a.ext_type,
+                "—", "—", "⚠️ Aucune config",
+                "—", "—", len(a.ingested_metrics),
+            ])
+
+    headers = [
+        "Extension", "Version", "Type",
+        "Config ID", "Scope",
+        "Statut", "Feature sets actifs",
+        "Feature sets manquants", "Métriques ingérées",
+    ]
+    print(tabulate(rows, headers=headers, tablefmt="rounded_outline"))
+
+
+def display_metrics_detail(audits: list[ExtensionAudit]):
+    print("\n" + "═" * 80)
+    print("  DÉTAIL DES MÉTRIQUES INGÉRÉES")
+    print("═" * 80)
+
+    for a in audits:
+        if not a.ingested_metrics:
+            print(f"\n  {a.name} → ⚠️  Aucune métrique ingérée")
+            continue
+        print(f"\n  {a.name} ({len(a.ingested_metrics)} métriques)")
+        for m in sorted(a.ingested_metrics):
+            print(f"    • {m}")
+
+
+def export_json(audits: list[ExtensionAudit], path: str = "audit_result.json"):
+    output = []
+    for a in audits:
+        output.append({
+            "extensionName": a.name,
+            "version": a.version,
+            "type": a.ext_type,
+            "availableFeatureSets": a.available_feature_sets,
+            "ingestedMetrics": a.ingested_metrics,
+            "configurations": [
+                {
+                    "objectId": c.get("objectId"),
+                    "scope": c.get("scope"),
+                    "enabled": c.get("value", {}).get("enabled"),
+                    "activeFeatureSets": c.get("value", {}).get("featureSets", []),
+                }
+                for c in a.configs
+            ],
+        })
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+    print(f"\n  💾 Export JSON : {path}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  MAIN
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main():
+    print(f"\n🔍 Audit Dynatrace — {MANAGED_URL}/e/{ENVIRONMENT_ID}")
+    print("─" * 60)
+
+    print("\n📦 Récupération des extensions…")
+    extensions = fetch_extensions()
+    print(f"   {len(extensions)} extension(s) trouvée(s)\n")
+
+    if not extensions:
+        print("  Aucune extension déployée.")
+        return
+
+    print("📊 Analyse en cours…")
+    audits = [audit_extension(ext) for ext in extensions]
+
+    display_summary(audits)
+    display_metrics_detail(audits)
+    export_json(audits)
+
+    print("\n✅ Audit terminé.\n")
+
+
+if __name__ == "__main__":
+    main()
