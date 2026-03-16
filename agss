@@ -1,0 +1,175 @@
+"""
+services.py — Appels API Dynatrace v2 pour l'audit des extensions AG.
+"""
+
+import logging
+from collections import defaultdict
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers API ────────────────────────────────────────────────────────────────
+
+def _paginate(base_url: str, path: str, key: str, token: str, ssl_verify: bool) -> list:
+    """Récupère toutes les pages d'un endpoint paginé."""
+    items, next_page = [], None
+    headers = {"Authorization": f"Api-Token {token}", "Content-Type": "application/json"}
+
+    while True:
+        params = {"pageSize": 100}
+        if next_page:
+            params["nextPageKey"] = next_page
+
+        try:
+            r = requests.get(
+                f"{base_url}{path}",
+                headers=headers,
+                params=params,
+                verify=ssl_verify,
+                timeout=30,
+            )
+            r.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("API error on %s%s: %s", base_url, path, exc)
+            break
+
+        data = r.json()
+        items.extend(data.get(key, []))
+        next_page = data.get("nextPageKey")
+        if not next_page:
+            break
+
+    return items
+
+
+def _get_active_version(base_url: str, ext_name: str, token: str, ssl_verify: bool):
+    """Retourne la version active d'une extension (environmentConfiguration)."""
+    headers = {"Authorization": f"Api-Token {token}"}
+    try:
+        r = requests.get(
+            f"{base_url}/extensions/{ext_name}/environmentConfiguration",
+            headers=headers,
+            verify=ssl_verify,
+            timeout=15,
+        )
+        if r.ok:
+            return r.json().get("version")
+    except requests.RequestException as exc:
+        logger.warning("Could not fetch active version for %s: %s", ext_name, exc)
+    return None
+
+
+# ── Audit principal ────────────────────────────────────────────────────────────
+
+def fetch_ag_extensions_for_environment(env) -> list[dict]:
+    """
+    Pour un DynatraceEnvironment donné, retourne la liste des extensions AG avec :
+      - extension_name
+      - active_version
+      - version_counts  { version: nb_monitoring_configs }
+    """
+    base_url   = env.base_url
+    token      = env.api_token
+    ssl_verify = env.ssl_verify
+
+    extensions = _paginate(base_url, "/extensions", "extensions", token, ssl_verify)
+    results = []
+
+    for ext in extensions:
+        name = ext.get("extensionName", "")
+        if not name:
+            continue
+
+        configs = _paginate(
+            base_url,
+            f"/extensions/{name}/monitoringConfigurations",
+            "items",
+            token,
+            ssl_verify,
+        )
+
+        # Filtre ActiveGate uniquement
+        ag_configs = [c for c in configs if c.get("scope", "").startswith("ag_")]
+        if not ag_configs:
+            continue
+
+        active_version = _get_active_version(base_url, name, token, ssl_verify)
+
+        version_counts: dict[str, int] = defaultdict(int)
+        for cfg in ag_configs:
+            v = cfg.get("value", {}).get("version") or active_version or "unknown"
+            version_counts[v] += 1
+
+        results.append({
+            "extension_name": name,
+            "active_version": active_version,
+            "version_counts": dict(version_counts),
+        })
+
+    return results
+
+
+def build_audit_matrix(environments, target_versions: dict[str, str]) -> list[dict]:
+    """
+    Construit la matrice d'audit multi-environnements.
+
+    Paramètres
+    ----------
+    environments    : queryset DynatraceEnvironment
+    target_versions : { extension_name: target_version }  (depuis ExtensionTargetVersion)
+
+    Retourne une liste de lignes :
+    {
+        "extension_name": str,
+        "target_version": str | None,
+        "on_target":  [ { "env_label", "active_version", "monitoring_configs" } ],
+        "off_target": [ { "env_label", "active_version", "monitoring_configs" } ],
+    }
+    """
+    # extension_name → { env_label → { active_version, version_counts } }
+    matrix: dict[str, dict] = defaultdict(dict)
+
+    for env in environments:
+        if not env.is_active:
+            continue
+        env_label = env.label
+        ext_list  = fetch_ag_extensions_for_environment(env)
+
+        for item in ext_list:
+            ext_name = item["extension_name"]
+            matrix[ext_name][env_label] = {
+                "active_version": item["active_version"],
+                "version_counts": item["version_counts"],
+            }
+
+    rows = []
+    for ext_name in sorted(matrix.keys()):
+        target_v = target_versions.get(ext_name)
+        on_target  = []
+        off_target = []
+
+        for env_label, data in matrix[ext_name].items():
+            av     = data["active_version"]
+            counts = data["version_counts"]
+            total  = sum(counts.values())
+            entry  = {
+                "env_label":        env_label,
+                "active_version":   av,
+                "monitoring_configs": total,
+                "version_counts":   counts,
+            }
+            if target_v and av == target_v:
+                on_target.append(entry)
+            else:
+                off_target.append(entry)
+
+        rows.append({
+            "extension_name": ext_name,
+            "target_version": target_v,
+            "on_target":      on_target,
+            "off_target":     off_target,
+        })
+
+    return rows
