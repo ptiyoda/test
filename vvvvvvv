@@ -1,0 +1,212 @@
+import json
+import asyncio
+
+from django.views.generic import TemplateView
+from django.contrib.auth.mixins import LoginRequiredMixin
+
+from .models import DynatraceEnvironment, ExtensionTargetVersion
+from .services import DynatraceAuditService
+
+# Couleurs CSS par cluster
+CLUSTER_COLORS = [
+    "#1d9e75",
+    "#185fa5",
+    "#ba7517",
+    "#993556",
+    "#7f77dd",
+    "#d85a30",
+    "#3b6d11",
+    "#5f185f",
+]
+
+
+def cluster_color_map(environments):
+    seen = {}
+    idx = 0
+    for env in environments:
+        cname = env.cluster.name
+        if cname not in seen:
+            seen[cname] = CLUSTER_COLORS[idx % len(CLUSTER_COLORS)]
+            idx += 1
+    return seen
+
+
+class DashboardView(LoginRequiredMixin, TemplateView):
+    template_name = "extensions_audit/dashboard.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        total_envs = DynatraceEnvironment.objects.filter(is_active=True).count()
+        total_exts = ExtensionTargetVersion.objects.count()
+        context.update({
+            "total_envs": total_envs,
+            "total_exts": total_exts,
+        })
+        return context
+
+
+class TenantMatrixView(LoginRequiredMixin, TemplateView):
+    template_name = "extensions_audit/tenant_matrix.html"
+
+    def get_environments(self):
+        return list(
+            DynatraceEnvironment.objects
+            .filter(is_active=True)
+            .select_related("cluster")
+            .order_by("cluster__name", "name")
+        )
+
+    def get_target_versions(self):
+        return {
+            t.extension_name: t.target_version
+            for t in ExtensionTargetVersion.objects.all()
+        }
+
+    async def run_audit_async(self, environments, target_versions):
+        """
+        Lance tous les audits d'environnements en parallèle
+        """
+        services = [
+            DynatraceAuditService(env)
+            for env in environments
+        ]
+
+        tasks = [
+            service.build_env_matrix(target_versions)
+            for service in services
+        ]
+
+        results = await asyncio.gather(*tasks)
+        return results
+
+    def build_global_matrix(self, env_results, environments, target_versions):
+        """
+        Reconstruit la matrice globale multi-tenant
+        """
+        matrix = {}
+
+        # Reconstruire par extension
+        for result in env_results:
+            env_label = result["env_label"]
+            for ext in result["extensions"]:
+                name = ext["extension_name"]
+                if name not in matrix:
+                    matrix[name] = {}
+                matrix[name][env_label] = ext
+
+        # Transformer en rows
+        rows = []
+        for ext_name, envs in matrix.items():
+            tenant_cells = []
+            for env in environments:
+                label = env.label
+                if label not in envs:
+                    tenant_cells.append({
+                        "env_label": label,
+                        "cluster_name": env.cluster.name,
+                        "env_name": env.name,
+                        "active_version": None,
+                        "status": "absent",
+                        "is_absent": True,
+                    })
+                    continue
+
+                d = envs[label]
+                tenant_cells.append({
+                    "env_label": label,
+                    "cluster_name": env.cluster.name,
+                    "env_name": env.name,
+                    "active_version": d["active_version"],
+                    "status": d["status"],
+                    "is_absent": False,
+                })
+
+            rows.append({
+                "extension_name": ext_name,
+                "target_version": target_versions.get(ext_name),
+                "tenants": tenant_cells,
+            })
+
+        return rows
+
+    def colorize_cells(self, rows, color_map):
+        for row in rows:
+            for cell in row["tenants"]:
+                cell["cluster_color"] = color_map.get(
+                    cell["cluster_name"], "#888780"
+                )
+
+    def compute_kpis(self, rows):
+        total_exts = len(rows)
+        inter_div_count = sum(1 for r in rows if r.get("is_inter_divergent"))
+        intra_mix_count = sum(1 for r in rows if r.get("has_intra_mix"))
+        absent_count = sum(1 for r in rows if r.get("has_absent"))
+
+        drift_count = sum(
+            1 for r in rows if any(c["status"] == "drift" for c in r["tenants"])
+        )
+        rollout_count = sum(
+            1 for r in rows if any(c["status"] == "rollout" for c in r["tenants"])
+        )
+        ok_count = sum(
+            1 for r in rows if all(
+                c["status"] == "ok" for c in r["tenants"] if not c["is_absent"]
+            )
+        )
+
+        return {
+            "total_exts": total_exts,
+            "inter_div_count": inter_div_count,
+            "intra_mix_count": intra_mix_count,
+            "absent_count": absent_count,
+            "drift_count": drift_count,
+            "rollout_count": rollout_count,
+            "ok_count": ok_count,
+        }
+
+    def build_clusters(self, environments, color_map):
+        clusters_ordered = []
+        seen_clusters = {}
+        for env in environments:
+            cname = env.cluster.name
+            if cname not in seen_clusters:
+                seen_clusters[cname] = {
+                    "name": cname,
+                    "color": color_map.get(cname, "#888780"),
+                    "envs": [],
+                }
+                clusters_ordered.append(seen_clusters[cname])
+            seen_clusters[cname]["envs"].append(env.name)
+        return clusters_ordered
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        environments = self.get_environments()
+        target_versions = self.get_target_versions()
+
+        # Async audit global
+        env_results = asyncio.run(
+            self.run_audit_async(environments, target_versions)
+        )
+
+        # Build matrix
+        rows = self.build_global_matrix(env_results, environments, target_versions)
+
+        # Colors
+        color_map = cluster_color_map(environments)
+        self.colorize_cells(rows, color_map)
+
+        # Clusters
+        clusters_ordered = self.build_clusters(environments, color_map)
+
+        # KPIs
+        kpis = self.compute_kpis(rows)
+
+        context.update({
+            "rows": rows,
+            "clusters_ordered": clusters_ordered,
+            "clusters_json": json.dumps(clusters_ordered),
+            "total_envs": len(environments),
+            **kpis
+        })
+        return context
