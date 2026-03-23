@@ -1,0 +1,136 @@
+import asyncio
+import logging
+from collections import defaultdict
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+class DynatraceAuditService:
+    """
+    Instance pour 1 environnement Dynatrace.
+    Fournit la liste des extensions AG et construit la matrice locale.
+    """
+
+    def __init__(self, env, max_concurrent_requests=20, timeout=30):
+        self.env = env
+        self.semaphore = asyncio.Semaphore(max_concurrent_requests)
+        self.timeout = timeout
+
+    def _headers(self, token):
+        return {
+            "Authorization": f"Api-Token {token}",
+            "Content-Type": "application/json",
+        }
+
+    async def _request(self, client, url, headers, params=None):
+        async with self.semaphore:
+            for attempt in range(3):
+                try:
+                    r = await client.get(url, headers=headers, params=params)
+                    if r.status_code == 429:
+                        wait = 2 ** attempt
+                        logger.warning("429 rate limit, waiting %ss", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    r.raise_for_status()
+                    return r.json()
+                except Exception as exc:
+                    logger.warning("HTTP error %s : %s", url, exc)
+                    await asyncio.sleep(1)
+        return None
+
+    async def _paginate(self, client, path, key):
+        items = []
+        next_page = None
+        headers = self._headers(self.env.api_token)
+
+        while True:
+            params = {"pageSize": 100}
+            if next_page:
+                params["nextPageKey"] = next_page
+
+            data = await self._request(
+                client,
+                f"{self.env.base_url}{path}",
+                headers,
+                params,
+            )
+            if not data:
+                break
+            items.extend(data.get(key, []))
+            next_page = data.get("nextPageKey")
+            if not next_page:
+                break
+        return items
+
+    async def _get_active_version(self, client, ext_name):
+        headers = self._headers(self.env.api_token)
+        data = await self._request(
+            client,
+            f"{self.env.base_url}/extensions/{ext_name}/environmentConfiguration",
+            headers,
+        )
+        if data:
+            return data.get("version")
+        return None
+
+    async def _process_extension(self, client, ext):
+        name = ext.get("extensionName")
+        if not name:
+            return None
+
+        latest_version = ext.get("version")
+
+        # Lancer pagination configs et active version en parallèle
+        configs_task = self._paginate(client, f"/extensions/{name}/monitoringConfigurations", "items")
+        active_task = self._get_active_version(client, name)
+
+        configs, active_version = await asyncio.gather(configs_task, active_task)
+
+        # Filtrer AG
+        ag_configs = [c for c in configs if c.get("scope", "").startswith("ag_")]
+        if not ag_configs:
+            return None
+
+        # Compter versions
+        version_counts = defaultdict(int)
+        for cfg in ag_configs:
+            v = cfg.get("value", {}).get("version") or active_version or "unknown"
+            version_counts[v] += 1
+
+        total = sum(version_counts.values())
+
+        # Status simple (ok si active_version existe)
+        status = "ok" if active_version else "absent"
+        return {
+            "extension_name": name,
+            "latest_version": latest_version,
+            "active_version": active_version,
+            "version_counts": dict(version_counts),
+            "monitoring_configs_total": total,
+            "is_mixed": len(version_counts) > 1,
+            "status": status,
+        }
+
+    async def fetch_extensions(self):
+        """
+        Récupère toutes les extensions AG pour cet environnement
+        """
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.env.ssl_verify) as client:
+            extensions = await self._paginate(client, "/extensions", "extensions")
+
+            tasks = [self._process_extension(client, ext) for ext in extensions]
+            results = await asyncio.gather(*tasks)
+            return [r for r in results if r]
+
+    async def build_env_matrix(self, target_versions=None):
+        """
+        Construit la "matrice" locale pour cet environnement
+        """
+        extensions = await self.fetch_extensions()
+        return {
+            "env_label": self.env.label,
+            "extensions": extensions,
+        }
