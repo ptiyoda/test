@@ -1,0 +1,698 @@
+{% extends "extensions_audit/base.html" %}
+{% load audit_extras %}
+
+{% block title %}Matrice Extensions par Tenant{% endblock %}
+{% block page_title %}Extensions AG — Vue par Tenant{% endblock %}
+{% block breadcrumb %}
+  <li class="breadcrumb-item active">Matrice Tenants</li>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+/* ── KPI cards ────────────────────────────────────────────── */
+.kpi-card          { border-left: 4px solid; transition: transform .15s; }
+.kpi-card:hover    { transform: translateY(-2px); }
+.kpi-card.kpi-total{ border-color: #6c757d; }
+.kpi-card.kpi-div  { border-color: #dc3545; }
+.kpi-card.kpi-mix  { border-color: #fd7e14; }
+.kpi-card.kpi-ok   { border-color: #198754; }
+
+/* ── Table layout ─────────────────────────────────────────── */
+#matrixTable th,
+#matrixTable td    { vertical-align: middle; }
+#matrixTable td.col-ext { vertical-align: top; }
+
+/* ── Extension cell ───────────────────────────────────────── */
+.ext-name          { font-family: monospace; font-size: .8rem; word-break: break-all; }
+.ext-origin        { font-size: .72rem; color: #6c757d; margin-top: 2px; }
+
+/* ── Status row colors ────────────────────────────────────── */
+tr.row-inter-div   { background: rgba(220,53,69,.04) !important; }
+tr.row-intra-mix   { background: rgba(255,193,7,.04) !important; }
+
+/* ── Version pills ────────────────────────────────────────── */
+.pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: .72rem;
+  font-weight: 600;
+  font-family: monospace;
+}
+.pill-ok      { background: #d1fae5; color: #065f46; }
+.pill-ko      { background: #fee2e2; color: #991b1b; }
+.pill-mix     { background: #fff3cd; color: #92400e; }
+.pill-neutral { background: #dbeafe; color: #1e40af; }
+.pill-none    { background: #f3f4f6; color: #6b7280; font-style: italic; font-family: sans-serif; }
+.pill-target  { background: #dbeafe; color: #1e40af; }
+.pill-latest  { background: #ede9fe; color: #4c1d95; }
+
+/* ── Summary chips ────────────────────────────────────────── */
+.summary-chips     { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: .72rem;
+  background: #fff;
+}
+.chip-dot          { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot-ok    { background: #198754; }
+.dot-ko    { background: #dc3545; }
+.dot-mix   { background: #fd7e14; }
+.dot-neu   { background: #0d6efd; }
+.dot-abs   { background: #adb5bd; }
+.chip-v    { font-family: monospace; font-weight: 600; }
+.chip-cnt  { color: #6c757d; }
+
+/* ── Detail btn ───────────────────────────────────────────── */
+.btn-detail {
+  font-size: .72rem;
+  padding: 2px 10px;
+  margin-top: 6px;
+}
+
+/* ── MODAL ────────────────────────────────────────────────── */
+#tenantModal .modal-dialog { max-width: 700px; }
+
+.modal-ext-name    { font-family: monospace; font-size: .85rem; word-break: break-all; }
+.modal-meta        { font-size: .78rem; color: #6c757d; margin-top: 4px; }
+
+/* Summary bar dans le modal */
+.modal-summary     {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 10px 16px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+}
+
+/* Cluster section */
+.cluster-sep {
+  padding: 6px 16px 3px;
+  font-size: .72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .5px;
+  color: #6c757d;
+  border-bottom: 1px solid #dee2e6;
+  display: flex; align-items: center; gap: 6px;
+}
+.cluster-color-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+/* Tenant row dans le modal */
+.tenant-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #f1f3f5;
+}
+.tenant-detail-row:last-child { border-bottom: none; }
+
+.tenant-status-icon {
+  width: 20px; height: 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .65rem; font-weight: 700; flex-shrink: 0; margin-top: 2px;
+}
+.tsi-ok  { background: #d1fae5; color: #065f46; }
+.tsi-ko  { background: #fee2e2; color: #991b1b; }
+.tsi-mix { background: #fff3cd; color: #92400e; }
+.tsi-neu { background: #dbeafe; color: #1e40af; }
+.tsi-abs { background: #f3f4f6; color: #6b7280; }
+
+.tenant-env-name   { font-size: .82rem; font-weight: 600; min-width: 110px; }
+.badge-mixed       { font-size: .65rem; }
+
+/* Version-configs stack */
+.vc-stack          { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.vc-row            { display: flex; align-items: center; gap: 8px; }
+.vc-bar-wrap       {
+  flex: 1; height: 6px;
+  background: #e9ecef; border-radius: 3px; overflow: hidden;
+  min-width: 60px;
+}
+.vc-bar            { height: 100%; border-radius: 3px; }
+.bar-ok   { background: #198754; }
+.bar-ko   { background: #dc3545; }
+.bar-neu  { background: #0d6efd; }
+.bar-mix  { background: #fd7e14; }
+.vc-cfg-count      { font-size: .7rem; color: #6c757d; min-width: 45px; text-align: right; }
+.vc-total-line     { font-size: .7rem; color: #6c757d; margin-top: 2px; }
+
+/* absent row */
+.tenant-absent-label { font-size: .78rem; color: #adb5bd; font-style: italic; }
+
+/* modal search */
+.modal-search-wrap { padding: 8px 16px; border-bottom: 1px solid #dee2e6; }
+#modalTenantSearch { font-size: .82rem; }
+
+/* modal body scroll */
+.modal-body        { max-height: 55vh; overflow-y: auto; padding: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── KPI Cards ──────────────────────────────────────────── -->
+<div class="row mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card kpi-total">
+      <div class="card-body d-flex align-items-center gap-3 py-2">
+        <i class="fas fa-puzzle-piece fa-2x text-secondary"></i>
+        <div>
+          <div class="fs-4 fw-bold">{{ total_exts }}</div>
+          <div class="text-muted small">Extensions AG</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card kpi-div">
+      <div class="card-body d-flex align-items-center gap-3 py-2">
+        <i class="fas fa-code-branch fa-2x text-danger"></i>
+        <div>
+          <div class="fs-4 fw-bold text-danger">{{ inter_div_count }}</div>
+          <div class="text-muted small">Divergentes inter-tenants</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card kpi-mix">
+      <div class="card-body d-flex align-items-center gap-3 py-2">
+        <i class="fas fa-layer-group fa-2x text-warning"></i>
+        <div>
+          <div class="fs-4 fw-bold text-warning">{{ intra_mix_count }}</div>
+          <div class="text-muted small">Configs mixtes intra-tenant</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card kpi-ok">
+      <div class="card-body d-flex align-items-center gap-3 py-2">
+        <i class="fas fa-check-circle fa-2x text-success"></i>
+        <div>
+          <div class="fs-4 fw-bold text-success">{{ ok_count }}</div>
+          <div class="text-muted small">Homogènes sur cible</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Légende ─────────────────────────────────────────────── -->
+<div class="d-flex flex-wrap gap-3 mb-3 small">
+  <span><span class="pill pill-ok">v1.0.0</span> = version cible</span>
+  <span><span class="pill pill-ko">v1.0.0</span> ≠ version cible</span>
+  <span><span class="pill pill-mix">v1.0.0</span> configs mixtes</span>
+  <span><span class="pill pill-neutral">v1.0.0</span> pas de cible</span>
+  <span><span class="pill pill-none">—</span> absent</span>
+  <span><span class="pill pill-target">v1.0.0</span> cible DB</span>
+  <span><span class="pill pill-latest">v1.0.0</span> dernière dispo.</span>
+</div>
+
+<!-- ── Filtres ─────────────────────────────────────────────── -->
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <input type="text" id="extSearch"
+         class="form-control form-control-sm"
+         style="max-width:250px"
+         placeholder="🔍 Filtrer par extension…">
+  <select id="filterStatus" class="form-select form-select-sm" style="max-width:220px">
+    <option value="all">Toutes les extensions</option>
+    <option value="div">Divergentes inter-tenants</option>
+    <option value="mix">Configs mixtes intra-tenant</option>
+    <option value="ok">Homogènes sur cible</option>
+    <option value="notarget">Sans version cible</option>
+  </select>
+  <button class="btn btn-sm btn-outline-secondary" id="btnReset">
+    <i class="fas fa-undo me-1"></i>Réinitialiser
+  </button>
+  <span class="ms-auto small text-muted align-self-center" id="visCount"></span>
+</div>
+
+<!-- ── Table ───────────────────────────────────────────────── -->
+<div class="card">
+  <div class="card-header d-flex align-items-center justify-content-between">
+    <h3 class="card-title mb-0">
+      <i class="fas fa-table me-2 text-warning"></i>
+      Audit extensions AG — {{ total_envs }} tenants
+    </h3>
+    <small class="text-muted">
+      <i class="fas fa-clock me-1"></i>{% now "d/m/Y H:i" %}
+    </small>
+  </div>
+
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table id="matrixTable" class="table table-bordered table-hover table-sm mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th style="min-width:220px">
+              <i class="fas fa-puzzle-piece me-1"></i> Extension
+            </th>
+            <th style="min-width:105px" class="text-center">
+              <i class="fas fa-arrow-up me-1"></i> Dernière dispo.
+            </th>
+            <th style="min-width:300px">
+              <i class="fas fa-eye me-1"></i> Version active — résumé
+            </th>
+            <th style="min-width:105px" class="text-center">
+              <i class="fas fa-bullseye me-1"></i> Cible DB
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="{% if row.is_inter_divergent %}row-inter-div{% elif row.has_intra_mix %}row-intra-mix{% endif %}"
+              data-inter-div="{{ row.is_inter_divergent|yesno:'1,0' }}"
+              data-intra-mix="{{ row.has_intra_mix|yesno:'1,0' }}"
+              data-has-target="{{ row.target_version|yesno:'1,0' }}"
+              data-name="{{ row.extension_name }}">
+
+            <!-- Col 1 : Extension -->
+            <td class="col-ext">
+              <div class="ext-name">{{ row.extension_name }}</div>
+              <div class="ext-origin">
+                {% if row.extension_name|slice:":13" == "com.dynatrace" %}
+                  <i class="fas fa-registered me-1 text-info"></i>Officielle Dynatrace
+                {% else %}
+                  <i class="fas fa-code me-1 text-secondary"></i>Extension custom
+                {% endif %}
+              </div>
+              <div class="mt-1 d-flex flex-wrap gap-1">
+                {% if row.is_inter_divergent %}
+                  <span class="badge bg-danger">
+                    <i class="fas fa-code-branch me-1"></i>divergent
+                  </span>
+                {% endif %}
+                {% if row.has_intra_mix %}
+                  <span class="badge bg-warning text-dark">
+                    <i class="fas fa-layer-group me-1"></i>multi-versions
+                  </span>
+                {% endif %}
+                {% if row.has_absent %}
+                  <span class="badge bg-secondary">
+                    <i class="fas fa-minus-circle me-1"></i>{{ row.absent_count }} absent{{ row.absent_count|pluralize }}
+                  </span>
+                {% endif %}
+              </div>
+            </td>
+
+            <!-- Col 2 : Dernière version disponible -->
+            <td class="text-center">
+              {% if row.latest_version %}
+                {% if row.target_version and row.latest_version == row.target_version %}
+                  <span class="pill pill-ok">v{{ row.latest_version }}</span>
+                {% elif row.target_version %}
+                  <span class="pill pill-latest">v{{ row.latest_version }}</span>
+                  <div class="small text-muted mt-1" style="font-size:.68rem">≠ cible</div>
+                {% else %}
+                  <span class="pill pill-latest">v{{ row.latest_version }}</span>
+                {% endif %}
+              {% else %}
+                <span class="pill pill-none">—</span>
+              {% endif %}
+            </td>
+
+            <!-- Col 3 : Version active résumé -->
+            <td>
+              <!-- Chips résumé -->
+              <div class="summary-chips">
+                {% for version, tenant_count in row.summary_versions.items %}
+                  <div class="chip">
+                    {% if row.target_version %}
+                      {% if version == row.target_version %}
+                        <span class="chip-dot dot-ok"></span>
+                      {% else %}
+                        <span class="chip-dot dot-ko"></span>
+                      {% endif %}
+                    {% else %}
+                      <span class="chip-dot dot-neu"></span>
+                    {% endif %}
+                    <span class="chip-v">v{{ version }}</span>
+                    <span class="chip-cnt">{{ tenant_count }} tenant{{ tenant_count|pluralize }}</span>
+                  </div>
+                {% endfor %}
+                {% if row.absent_count %}
+                  <div class="chip">
+                    <span class="chip-dot dot-abs"></span>
+                    <span class="chip-v" style="color:#6c757d">absent</span>
+                    <span class="chip-cnt">{{ row.absent_count }}</span>
+                  </div>
+                {% endif %}
+              </div>
+
+              <!-- Bouton détail modal -->
+              <button class="btn btn-sm btn-outline-secondary btn-detail"
+                      data-ext-index="{{ forloop.counter0 }}"
+                      onclick="openTenantModal(this)">
+                <i class="fas fa-list me-1"></i>Détail par tenant →
+              </button>
+            </td>
+
+            <!-- Col 4 : Cible DB -->
+            <td class="text-center">
+              {% if row.target_version %}
+                <span class="pill pill-target">v{{ row.target_version }}</span>
+              {% else %}
+                <span class="pill pill-none">Non définie</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="4" class="text-center text-muted py-4">
+              <i class="fas fa-info-circle me-2"></i>
+              Aucune extension ActiveGate trouvée.
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     MODAL — Détail par tenant
+══════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="tenantModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+
+      <!-- Header -->
+      <div class="modal-header">
+        <div>
+          <div class="modal-ext-name" id="modalExtName"></div>
+          <div class="modal-meta" id="modalExtMeta"></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <!-- Résumé versions -->
+      <div class="modal-summary" id="modalSummary"></div>
+
+      <!-- Filtre tenants -->
+      <div class="modal-search-wrap">
+        <input type="text"
+               id="modalTenantSearch"
+               class="form-control form-control-sm"
+               placeholder="🔍 Filtrer par cluster ou environnement…"
+               oninput="filterModalTenants()">
+      </div>
+
+      <!-- Body : liste tenants par cluster -->
+      <div class="modal-body" id="modalBody"></div>
+
+      <!-- Footer -->
+      <div class="modal-footer py-2 d-flex justify-content-between">
+        <small class="text-muted" id="modalFooterInfo"></small>
+        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Fermer</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+
+{% block extra_js %}
+<script>
+/* ── Données Django → JS ──────────────────────────────────── */
+const ROWS_DATA = [
+  {% for row in rows %}
+  {
+    extensionName:   "{{ row.extension_name }}",
+    targetVersion:   {{ row.target_version|default:"null"|safe|stringformat:"s" }},
+    latestVersion:   {{ row.latest_version|default:"null"|safe|stringformat:"s" }},
+    isInterDivergent: {{ row.is_inter_divergent|yesno:"true,false" }},
+    hasIntraMix:     {{ row.has_intra_mix|yesno:"true,false" }},
+    hasAbsent:       {{ row.has_absent|yesno:"true,false" }},
+    absentCount:     {{ row.absent_count }},
+    summaryVersions: {{ row.summary_versions|default:"{}"|safe }},
+    tenants: [
+      {% for cell in row.tenants %}
+      {
+        envLabel:      "{{ cell.env_label|escapejs }}",
+        clusterName:   "{{ cell.cluster_name|escapejs }}",
+        clusterColor:  "{{ cell.cluster_color }}",
+        envName:       "{{ cell.env_name|escapejs }}",
+        activeVersion: {{ cell.active_version|default:"null"|safe|stringformat:"s" }},
+        latestVersion: {{ cell.latest_version|default:"null"|safe|stringformat:"s" }},
+        versionCounts: {{ cell.version_counts|default:"{}"|safe }},
+        totalCfg:      {{ cell.monitoring_configs_total }},
+        isMixed:       {{ cell.is_mixed|yesno:"true,false" }},
+        isAbsent:      {{ cell.is_absent|yesno:"true,false" }},
+        status:        "{{ cell.status }}",
+      },
+      {% endfor %}
+    ],
+  },
+  {% endfor %}
+];
+
+// Correction : les valeurs string doivent être entre quotes dans le JSON
+// On reconstruit proprement les versions string depuis les attributs data
+(function fixRows(){
+  ROWS_DATA.forEach(row => {
+    if(row.targetVersion && typeof row.targetVersion !== 'string')
+      row.targetVersion = String(row.targetVersion);
+    if(row.latestVersion && typeof row.latestVersion !== 'string')
+      row.latestVersion = String(row.latestVersion);
+    row.tenants.forEach(t => {
+      if(t.activeVersion && typeof t.activeVersion !== 'string')
+        t.activeVersion = String(t.activeVersion);
+    });
+  });
+})();
+</script>
+
+<script>
+/* ── DataTable ────────────────────────────────────────────── */
+$(function(){
+  const table = $('#matrixTable').DataTable({
+    pageLength: 25,
+    order:      [[0,'asc']],
+    language:   { url: 'https://cdn.datatables.net/plug-ins/1.13.8/i18n/fr-FR.json' },
+    dom: '<"row mb-2"<"col-sm-6"B><"col-sm-6"f>>rt<"row mt-2"<"col-sm-5"i><"col-sm-7"p>>',
+    buttons: [
+      { extend:'excelHtml5', text:'<i class="fas fa-file-excel me-1"></i>Excel',   className:'btn btn-sm btn-success' },
+      { extend:'csvHtml5',   text:'<i class="fas fa-file-csv me-1"></i>CSV',       className:'btn btn-sm btn-secondary' },
+      { extend:'print',      text:'<i class="fas fa-print me-1"></i>Imprimer',     className:'btn btn-sm btn-outline-secondary' },
+    ],
+    columnDefs: [{ targets:[1,2,3], orderable:false }],
+  });
+
+  // Filtres personnalisés
+  $.fn.dataTable.ext.search.push(function(settings, data, dataIndex){
+    const tr    = table.row(dataIndex).node();
+    const q     = document.getElementById('extSearch').value.toLowerCase();
+    const fStat = document.getElementById('filterStatus').value;
+
+    if(q && !$(tr).data('name').toLowerCase().includes(q)) return false;
+    if(fStat === 'div'      && $(tr).data('inter-div') !== 1) return false;
+    if(fStat === 'mix'      && $(tr).data('intra-mix') !== 1) return false;
+    if(fStat === 'ok'       && ($(tr).data('inter-div') === 1 || $(tr).data('intra-mix') === 1)) return false;
+    if(fStat === 'notarget' && $(tr).data('has-target') !== 0) return false;
+    return true;
+  });
+
+  $('#extSearch, #filterStatus').on('input change', function(){
+    table.draw();
+    updateVisCount();
+  });
+
+  $('#btnReset').on('click', function(){
+    document.getElementById('extSearch').value    = '';
+    document.getElementById('filterStatus').value = 'all';
+    table.draw();
+    updateVisCount();
+  });
+
+  function updateVisCount(){
+    const vis   = table.rows({filter:'applied'}).count();
+    const total = table.rows().count();
+    document.getElementById('visCount').textContent = vis + ' / ' + total + ' extension(s)';
+  }
+  updateVisCount();
+});
+
+
+/* ── Modal ────────────────────────────────────────────────── */
+let currentRowData = null;
+
+function statusIconHtml(status){
+  const map = {
+    ok:      ['tsi-ok',  '✓'],
+    ko:      ['tsi-ko',  '✕'],
+    mix:     ['tsi-mix', '!'],
+    neutral: ['tsi-neu', '~'],
+    absent:  ['tsi-abs', '—'],
+  };
+  const [cls, lbl] = map[status] || ['tsi-abs','—'];
+  return `<div class="tenant-status-icon ${cls}">${lbl}</div>`;
+}
+
+function barClass(v, target){
+  if(!target) return 'bar-neu';
+  return v === target ? 'bar-ok' : 'bar-ko';
+}
+
+function pillClassFor(v, target){
+  if(!v)      return 'pill-none';
+  if(!target) return 'pill-neutral';
+  return v === target ? 'pill-ok' : 'pill-ko';
+}
+
+function buildModalSummary(row){
+  let html = '';
+  Object.entries(row.summaryVersions)
+    .sort((a,b) => b[1]-a[1])
+    .forEach(([v, cnt]) => {
+      const dot = !row.targetVersion ? 'dot-neu' : (v === row.targetVersion ? 'dot-ok' : 'dot-ko');
+      html += `<div class="chip">
+        <span class="chip-dot ${dot}"></span>
+        <span class="chip-v">v${v}</span>
+        <span class="chip-cnt">${cnt} tenant${cnt>1?'s':''}</span>
+      </div>`;
+    });
+  if(row.absentCount){
+    html += `<div class="chip">
+      <span class="chip-dot dot-abs"></span>
+      <span class="chip-v" style="color:#6c757d">absent</span>
+      <span class="chip-cnt">${row.absentCount}</span>
+    </div>`;
+  }
+  if(row.targetVersion){
+    const onTarget = row.tenants.filter(t=>!t.isAbsent && t.activeVersion===row.targetVersion).length;
+    html += `<span class="ms-auto small text-muted align-self-center">${onTarget}/${row.tenants.length} tenants sur v${row.targetVersion}</span>`;
+  }
+  return html;
+}
+
+function buildTenantRow(cell, target){
+  if(cell.isAbsent){
+    return `<div class="tenant-detail-row" data-cluster="${cell.clusterName}" data-env="${cell.envName}">
+      ${statusIconHtml('absent')}
+      <div class="tenant-env-name">${cell.envName}</div>
+      <div class="tenant-absent-label">— non déployée sur ce tenant</div>
+    </div>`;
+  }
+
+  const vc     = cell.versionCounts;
+  const total  = cell.totalCfg;
+  const maxCfg = Math.max(...Object.values(vc), 1);
+
+  // Trier : version avec le + de configs en premier
+  const sortedVC = Object.entries(vc).sort((a,b)=>b[1]-a[1]);
+
+  let vcHtml = '<div class="vc-stack">';
+  sortedVC.forEach(([v, cfg]) => {
+    const bc  = barClass(v, target);
+    const pct = Math.round((cfg / maxCfg) * 100);
+    const pc  = pillClassFor(v, target);
+    vcHtml += `<div class="vc-row">
+      <span class="pill ${pc}" style="font-size:.68rem;padding:1px 7px">v${v}</span>
+      <div class="vc-bar-wrap">
+        <div class="vc-bar ${bc}" style="width:${pct}%"></div>
+      </div>
+      <div class="vc-cfg-count">${cfg} cfg</div>
+    </div>`;
+  });
+  if(sortedVC.length > 1){
+    vcHtml += `<div class="vc-total-line"><i class="fas fa-cog me-1"></i>${total} monitoring configs au total</div>`;
+  }
+  vcHtml += '</div>';
+
+  const mixBadge = cell.isMixed
+    ? `<span class="badge bg-warning text-dark badge-mixed ms-2">
+         <i class="fas fa-layer-group me-1"></i>multi-versions
+       </span>`
+    : '';
+
+  return `<div class="tenant-detail-row" data-cluster="${cell.clusterName}" data-env="${cell.envName}">
+    ${statusIconHtml(cell.status)}
+    <div>
+      <div class="tenant-env-name">${cell.envName}${mixBadge}</div>
+    </div>
+    ${vcHtml}
+  </div>`;
+}
+
+function buildModalBody(row, query=''){
+  // Grouper par cluster
+  const byCluster = {};
+  row.tenants.forEach(cell => {
+    if(!byCluster[cell.clusterName]){
+      byCluster[cell.clusterName] = { color: cell.clusterColor, cells: [] };
+    }
+    byCluster[cell.clusterName].cells.push(cell);
+  });
+
+  let html     = '';
+  let visCount = 0;
+
+  Object.entries(byCluster).forEach(([clusterName, data]) => {
+    let rowsHtml = '';
+    data.cells.forEach(cell => {
+      const matchQ = query === ''
+        || cell.envName.toLowerCase().includes(query)
+        || clusterName.toLowerCase().includes(query);
+      if(!matchQ) return;
+      visCount++;
+      rowsHtml += buildTenantRow(cell, row.targetVersion);
+    });
+    if(rowsHtml){
+      html += `<div class="cluster-sep">
+        <span class="cluster-color-dot" style="background:${data.color}"></span>
+        ${clusterName}
+      </div>
+      ${rowsHtml}`;
+    }
+  });
+
+  if(!html){
+    html = `<div class="text-center text-muted py-4">
+      <i class="fas fa-search me-2"></i>Aucun tenant correspondant
+    </div>`;
+  }
+
+  document.getElementById('modalFooterInfo').textContent =
+    `${visCount} tenant${visCount>1?'s':''} affiché${visCount>1?'s':''}`;
+
+  return html;
+}
+
+function openTenantModal(btn){
+  const idx = parseInt(btn.getAttribute('data-ext-index'), 10);
+  currentRowData = ROWS_DATA[idx];
+  const row = currentRowData;
+
+  // Header
+  document.getElementById('modalExtName').textContent = row.extensionName;
+
+  let meta = row.extensionName.startsWith('com.dynatrace') ? 'Officielle Dynatrace' : 'Extension custom';
+  if(row.latestVersion) meta += `&nbsp;&nbsp;<span class="pill pill-latest" style="font-size:.72rem">dernière dispo. v${row.latestVersion}</span>`;
+  if(row.targetVersion) meta += `&nbsp;&nbsp;<span class="pill pill-target" style="font-size:.72rem">cible v${row.targetVersion}</span>`;
+  document.getElementById('modalExtMeta').innerHTML = meta;
+
+  // Summary
+  document.getElementById('modalSummary').innerHTML = buildModalSummary(row);
+
+  // Body
+  document.getElementById('modalTenantSearch').value = '';
+  document.getElementById('modalBody').innerHTML     = buildModalBody(row);
+
+  // Open
+  const modal = new bootstrap.Modal(document.getElementById('tenantModal'));
+  modal.show();
+}
+
+function filterModalTenants(){
+  if(!currentRowData) return;
+  const q = document.getElementById('modalTenantSearch').value.toLowerCase();
+  document.getElementById('modalBody').innerHTML = buildModalBody(currentRowData, q);
+}
+</script>
+{% endblock %}
