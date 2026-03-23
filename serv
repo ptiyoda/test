@@ -1,0 +1,309 @@
+import logging
+import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+# Thread tuning
+MAX_WORKERS_ENV = 5
+MAX_WORKERS_EXT = 5
+MAX_WORKERS_CALLS = 2
+REQUEST_TIMEOUT = 30
+RETRY_COUNT = 3
+
+
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Api-Token {token}", "Content-Type": "application/json"}
+
+
+def _request_with_retry(url, headers, params, ssl_verify):
+    for attempt in range(RETRY_COUNT):
+        try:
+            r = requests.get(
+                url,
+                headers=headers,
+                params=params,
+                verify=ssl_verify,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            if r.status_code == 429:
+                wait = 2 ** attempt
+                logger.warning("429 received, sleeping %ss", wait)
+                time.sleep(wait)
+                continue
+
+            r.raise_for_status()
+            return r
+
+        except requests.RequestException as exc:
+            logger.warning("HTTP error %s : %s", url, exc)
+            time.sleep(1)
+
+    return None
+
+
+# ── Pagination ────────────────────────────────────────────────────────────────
+
+def _paginate(base_url: str, path: str, key: str, token: str, ssl_verify: bool) -> list:
+    items, next_page = [], None
+    headers = _headers(token)
+
+    while True:
+        params = {"pageSize": 100}
+        if next_page:
+            params["nextPageKey"] = next_page
+
+        r = _request_with_retry(
+            f"{base_url}{path}",
+            headers,
+            params,
+            ssl_verify
+        )
+
+        if not r:
+            break
+
+        data = r.json()
+        items.extend(data.get(key, []))
+        next_page = data.get("nextPageKey")
+
+        if not next_page:
+            break
+
+    return items
+
+
+def _get_active_version(base_url: str, ext_name: str, token: str, ssl_verify: bool):
+    headers = _headers(token)
+
+    r = _request_with_retry(
+        f"{base_url}/extensions/{ext_name}/environmentConfiguration",
+        headers,
+        None,
+        ssl_verify
+    )
+
+    if r and r.ok:
+        return r.json().get("version")
+
+    return None
+
+
+# ── Extension processing ──────────────────────────────────────────────────────
+
+def _process_extension(env, ext):
+    base_url   = env.base_url
+    token      = env.api_token
+    ssl_verify = env.ssl_verify
+
+    name = ext.get("extensionName", "")
+    if not name:
+        return None
+
+    latest_version = ext.get("version")
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS_CALLS) as executor:
+        future_configs = executor.submit(
+            _paginate,
+            base_url,
+            f"/extensions/{name}/monitoringConfigurations",
+            "items",
+            token,
+            ssl_verify,
+        )
+        future_active = executor.submit(
+            _get_active_version,
+            base_url,
+            name,
+            token,
+            ssl_verify,
+        )
+
+        configs = future_configs.result()
+        active_version = future_active.result()
+
+    ag_configs = [c for c in configs if c.get("scope", "").startswith("ag_")]
+    if not ag_configs:
+        return None
+
+    version_counts = defaultdict(int)
+    for cfg in ag_configs:
+        v = cfg.get("value", {}).get("version") or active_version or "unknown"
+        version_counts[v] += 1
+
+    total = sum(version_counts.values())
+
+    return {
+        "extension_name":           name,
+        "latest_version":           latest_version,
+        "active_version":           active_version,
+        "version_counts":           dict(version_counts),
+        "monitoring_configs_total": total,
+        "is_mixed":                 len(version_counts) > 1,
+    }
+
+
+def fetch_ag_extensions_for_environment(env) -> list:
+    base_url   = env.base_url
+    token      = env.api_token
+    ssl_verify = env.ssl_verify
+
+    extensions = _paginate(base_url, "/extensions", "extensions", token, ssl_verify)
+    results = []
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS_EXT) as executor:
+        futures = [executor.submit(_process_extension, env, ext) for ext in extensions]
+
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                if result:
+                    results.append(result)
+            except Exception as exc:
+                logger.exception("Extension processing error: %s", exc)
+
+    return results
+
+
+# ── Matrix multi-environnements ───────────────────────────────────────────────
+
+def build_tenant_matrix(environments, target_versions: dict) -> dict:
+    matrix: dict = defaultdict(dict)
+
+    active_envs = [env for env in environments if env.is_active]
+
+    def process_env(env):
+        return env, fetch_ag_extensions_for_environment(env)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS_ENV) as executor:
+        futures = [executor.submit(process_env, env) for env in active_envs]
+
+        for future in as_completed(futures):
+            try:
+                env, items = future.result()
+                for item in items:
+                    ext_name = item["extension_name"]
+                    matrix[ext_name][env.label] = {
+                        "env":                      env,
+                        "active_version":           item["active_version"],
+                        "latest_version":           item["latest_version"],
+                        "version_counts":           item["version_counts"],
+                        "monitoring_configs_total": item["monitoring_configs_total"],
+                        "is_mixed":                 item["is_mixed"],
+                    }
+            except Exception as exc:
+                logger.exception("Environment processing error: %s", exc)
+
+    env_list = active_envs
+    rows = []
+
+    for ext_name in sorted(matrix.keys()):
+        target_v = target_versions.get(ext_name)
+        env_data = matrix[ext_name]
+
+        all_latest = [d["latest_version"] for d in env_data.values() if d["latest_version"]]
+        latest_version = _max_version(all_latest) if all_latest else None
+
+        tenant_cells = []
+        for env in env_list:
+            label = env.label
+            if label not in env_data:
+                tenant_cells.append({
+                    "env_label": label,
+                    "cluster_name": env.cluster.name,
+                    "env_name": env.name,
+                    "active_version": None,
+                    "latest_version": None,
+                    "version_counts": {},
+                    "monitoring_configs_total": 0,
+                    "is_mixed": False,
+                    "is_absent": True,
+                    "status": "absent",
+                })
+                continue
+
+            d = env_data[label]
+            av = d["active_version"]
+            mixed = d["is_mixed"]
+
+            tenant_cells.append({
+                "env_label": label,
+                "cluster_name": env.cluster.name,
+                "env_name": env.name,
+                "active_version": av,
+                "latest_version": d["latest_version"],
+                "version_counts": d["version_counts"],
+                "monitoring_configs_total": d["monitoring_configs_total"],
+                "is_mixed": mixed,
+                "is_absent": False,
+                "status": _compute_status(av, d["version_counts"], target_v, mixed),
+            })
+
+        summary = defaultdict(int)
+        absent_count = 0
+        for cell in tenant_cells:
+            if cell["is_absent"]:
+                absent_count += 1
+            else:
+                summary[cell["active_version"] or "unknown"] += 1
+
+        active_versions = [
+            c["active_version"] for c in tenant_cells
+            if not c["is_absent"] and c["active_version"]
+        ]
+
+        if target_v:
+            is_inter_divergent = any(v != target_v for v in active_versions)
+        else:
+            is_inter_divergent = len(set(active_versions)) > 1
+
+        rows.append({
+            "extension_name": ext_name,
+            "target_version": target_v,
+            "latest_version": latest_version,
+            "is_inter_divergent": is_inter_divergent,
+            "has_intra_mix": any(c["is_mixed"] for c in tenant_cells),
+            "has_absent": absent_count > 0,
+            "summary_versions": dict(summary),
+            "absent_count": absent_count,
+            "tenants": tenant_cells,
+        })
+
+    return {"rows": rows}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _compute_status(active_version, version_counts, target_version, is_mixed) -> str:
+    if not active_version:
+        return "absent"
+
+    if not target_version:
+        return "mix" if is_mixed else "neutral"
+
+    if is_mixed:
+        has_ok = target_version in version_counts
+        has_ko = any(v != target_version for v in version_counts)
+        if has_ok and has_ko:
+            return "mix"
+        return "ok" if has_ok else "ko"
+
+    return "ok" if active_version == target_version else "ko"
+
+
+def _max_version(versions: list) -> str:
+    def _key(v):
+        try:
+            return tuple(int(x) for x in str(v).split("."))
+        except ValueError:
+            return (0,)
+    try:
+        return max(versions, key=_key)
+    except Exception:
+        return versions[0] if versions else None
