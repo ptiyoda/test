@@ -1,0 +1,46 @@
+from django import template
+
+register = template.Library()
+
+
+@register.filter
+def get_item(dictionary, key):
+    """Accès dynamique à un dict dans un template : {{ mydict|get_item:key }}"""
+    if isinstance(dictionary, dict):
+        return dictionary.get(key)
+    return None
+
+
+@register.filter
+def status_badge_class(status):
+    """Retourne la classe Bootstrap du badge selon le statut."""
+    return {
+        "ok":      "success",
+        "ko":      "danger",
+        "mix":     "warning",
+        "neutral": "info",
+        "absent":  "secondary",
+    }.get(status, "secondary")
+
+
+@register.filter
+def status_icon(status):
+    """Retourne l'icône FontAwesome selon le statut."""
+    return {
+        "ok":      "fas fa-check-circle text-success",
+        "ko":      "fas fa-times-circle text-danger",
+        "mix":     "fas fa-exclamation-circle text-warning",
+        "neutral": "fas fa-circle text-info",
+        "absent":  "fas fa-minus-circle text-secondary",
+    }.get(status, "fas fa-circle text-secondary")
+
+
+@register.filter
+def status_label(status):
+    return {
+        "ok":      "Sur la cible",
+        "ko":      "Hors cible",
+        "mix":     "Versions mixtes",
+        "neutral": "Sans cible",
+        "absent":  "Absent",
+    }.get(status, status)
