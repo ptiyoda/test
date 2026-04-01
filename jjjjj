@@ -9,3 +9,33 @@ document.body.addEventListener('htmx:beforeSwap', function (event) {
     });
 });
 </script>
+
+
+<script>
+document.body.addEventListener('htmx:afterSwap', function (event) {
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+});
+</script>
+
+
+<script>
+function initTooltips() {
+    const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+    tooltipTriggerList.forEach(function (el) {
+        new bootstrap.Tooltip(el);
+    });
+}
+
+document.addEventListener("DOMContentLoaded", initTooltips);
+document.body.addEventListener("htmx:afterSwap", initTooltips);
+
+document.body.addEventListener("htmx:beforeSwap", function () {
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (el) {
+        const t = bootstrap.Tooltip.getInstance(el);
+        if (t) t.dispose();
+    });
+});
+</script>
