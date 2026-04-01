@@ -1,0 +1,11 @@
+<script>
+document.body.addEventListener('htmx:beforeSwap', function (event) {
+    const tooltips = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+    tooltips.forEach(function (el) {
+        const tooltip = bootstrap.Tooltip.getInstance(el);
+        if (tooltip) {
+            tooltip.dispose();
+        }
+    });
+});
+</script>
